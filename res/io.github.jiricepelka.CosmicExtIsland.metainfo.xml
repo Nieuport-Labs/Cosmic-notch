@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.jiricepelka.CosmicExtIsland</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <name>Dynamic Island</name>
+  <name xml:lang="cs">Dynamický ostrov</name>
+  <summary>Live activities over the COSMIC panel</summary>
+  <summary xml:lang="cs">Živé aktivity přes panel COSMIC</summary>
+  <description>
+    <p>A Dynamic Island for the COSMIC desktop. It sits over the top panel and shows the date, the time and what is playing. Point at it and it opens into:</p>
+    <ul>
+      <li>a home page with CPU, network, memory, disks, battery and a small player,</li>
+      <li>media controls with synced lyrics,</li>
+      <li>a shelf that holds files, text and images and sends them to your phone over LocalSend or KDE Connect,</li>
+      <li>a calendar,</li>
+      <li>a to-do list that can sync with Google Tasks.</li>
+    </ul>
+    <p>It follows your COSMIC theme: font, accent, transparency, frosted glass and corner radius. It steps aside for fullscreen videos and games.</p>
+    <p xml:lang="cs">Dynamický ostrov pro desktop COSMIC. Sedí přes horní panel a ukazuje datum, čas a co hraje. Po najetí myší se rozbalí na přehled systému, ovládání přehrávače s texty písní, přihrádku souborů, kalendář a úkoly synchronizované s Google Tasks.</p>
+  </description>
+  <url type="homepage">https://github.com/Nieuport-Labs/Cosmic-notch</url>
+  <url type="bugtracker">https://github.com/Nieuport-Labs/Cosmic-notch/issues</url>
+  <url type="vcs-browser">https://github.com/Nieuport-Labs/Cosmic-notch</url>
+  <developer id="io.github.nieuport-labs">
+    <name>Nieuport Labs</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+  <categories>
+    <category>Utility</category>
+  </categories>
+  <keywords>
+    <keyword>COSMIC</keyword>
+    <keyword>panel</keyword>
+    <keyword>media</keyword>
+    <keyword>dynamic island</keyword>
+  </keywords>
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+  <supports>
+    <control>pointing</control>
+  </supports>
+  <launchable type="desktop-id">io.github.jiricepelka.CosmicExtIsland.desktop</launchable>
+  <provides>
+    <id>com.system76.CosmicApplet</id>
+    <binary>cosmic-ext-island</binary>
+    <binary>cosmic-ext-island-applet</binary>
+  </provides>
+  <releases>
+    <release version="0.1.0" date="2026-10-18">
+      <description>
+        <p>First release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

@@ -1,0 +1,50 @@
+[package]
+name = "cosmic-ext-island"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "GPL-3.0-only"
+description = "Dynamic Island for the COSMIC desktop"
+repository = "https://github.com/Nieuport-Labs/Cosmic-notch"
+default-run = "cosmic-ext-island"
+
+[[bin]]
+name = "cosmic-ext-island"
+path = "src/bin/cosmic-ext-island.rs"
+
+[[bin]]
+name = "cosmic-ext-island-applet"
+path = "src/bin/cosmic-ext-island-applet.rs"
+
+[dependencies]
+chrono = { version = "0.4", features = ["unstable-locales"] }
+i18n-embed = { version = "0.16", features = ["fluent-system", "desktop-requester"] }
+i18n-embed-fl = "0.10"
+rust-embed = "8"
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt", "sync", "time"] }
+futures-util = "0.3"
+jiff = "0.2"
+libc = "0.2"
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
+mime_guess = "2"
+mpris2-zbus = { git = "https://github.com/pop-os/dbus-settings-bindings", rev = "eed01dd3609e" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+serde_json = "1"
+socket2 = { version = "0.5", features = ["all"] }
+tokio-util = { version = "0.7", features = ["io"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+
+[dependencies.libcosmic]
+git = "https://github.com/pop-os/libcosmic"
+rev = "dc11d6a11f601692fb8fd67fdc99775f0a9eb899"
+default-features = false
+features = ["applet", "dbus-config", "multi-window", "tokio", "wayland", "winit"]
+
+[profile.release]
+lto = "thin"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }

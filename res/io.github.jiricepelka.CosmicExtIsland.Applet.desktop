@@ -1,0 +1,15 @@
+[Desktop Entry]
+Name=Dynamic Island
+Name[cs]=Dynamický ostrov
+Comment=Keeps room in the panel for the Dynamic Island
+Comment[cs]=Drží v panelu místo pro dynamický ostrov
+Type=Application
+Exec=cosmic-ext-island-applet
+Terminal=false
+Categories=COSMIC;
+Keywords=COSMIC;Island;Media;
+Icon=io.github.jiricepelka.CosmicExtIsland-symbolic
+StartupNotify=false
+NoDisplay=true
+X-CosmicApplet=true
+X-OverflowPriority=10

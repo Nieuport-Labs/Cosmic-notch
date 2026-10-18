@@ -1,0 +1,22 @@
+Source: cosmic-ext-island
+Section: x11
+Priority: optional
+Maintainer: Jiří Čepelka <jirkacepelka@gmail.com>
+Build-Depends: debhelper-compat (= 13), just, cargo, rustc (>= 1.88), pkg-config, libxkbcommon-dev, libwayland-dev
+Standards-Version: 4.7.0
+Homepage: https://github.com/Nieuport-Labs/Cosmic-notch
+Rules-Requires-Root: no
+
+Package: cosmic-ext-island
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, cosmic-panel
+Recommends: pulseaudio-utils
+Suggests: gnome-online-accounts, gnome-control-center, kdeconnect
+Description: Dynamic Island for the COSMIC desktop
+ An island over the top panel of COSMIC that shows the date, the time and
+ what is playing. Pointed at, it opens into a system overview, media controls
+ with synced lyrics, a shelf for files, a calendar and a to-do list that can
+ sync with Google Tasks. It follows the COSMIC theme.
+ .
+ pulseaudio-utils provides parec, which the bars next to the playing track
+ read the sound from.

@@ -1,0 +1,14 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+override_dh_auto_clean:
+
+override_dh_auto_build:
+	just build-release
+
+override_dh_auto_test:
+
+override_dh_auto_install:
+	just rootdir=$(CURDIR)/debian/cosmic-ext-island prefix=/usr install

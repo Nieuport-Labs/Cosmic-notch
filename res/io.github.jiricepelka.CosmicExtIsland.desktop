@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Dynamic Island
+Name[cs]=Dynamický ostrov
+Comment=Live activities over the COSMIC panel
+Comment[cs]=Živé aktivity přes panel COSMIC
+Type=Application
+Exec=cosmic-ext-island
+Terminal=false
+Categories=COSMIC;Utility;
+Icon=io.github.jiricepelka.CosmicExtIsland-symbolic
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

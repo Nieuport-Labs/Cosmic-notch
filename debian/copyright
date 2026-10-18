@@ -1,0 +1,14 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: cosmic-ext-island
+Source: https://github.com/Nieuport-Labs/Cosmic-notch
+
+Files: *
+Copyright: 2026 Jiří Čepelka
+License: GPL-3.0-only
+ On Debian systems, the full text of the GNU General Public License
+ version 3 can be found in /usr/share/common-licenses/GPL-3.
+
+Files: res/icons/*-symbolic.svg
+Copyright: Lucide Contributors
+License: ISC
+ See res/icons/LICENSE-lucide.
