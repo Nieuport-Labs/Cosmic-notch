@@ -149,8 +149,6 @@ pub struct Island {
     config_handle: Option<cosmic_config::Config>,
     time_config: TimeAppletConfig,
     panel: PanelGeometry,
-    /// Whether the panel keeps room for the island.
-    panel_room: crate::panel::Room,
     locale: Locale,
     now: DateTime<Local>,
     outputs: Vec<OutputEntry>,
@@ -202,8 +200,6 @@ pub struct Island {
     /// When tasks were ticked off, for their leaving animation.
     ticked: HashMap<u64, Instant>,
     google: sync::GoogleSync,
-    /// Outputs where a fullscreen window is in front.
-    covered: crate::modules::fullscreen::Covered,
 }
 
 #[derive(Debug, Clone)]
@@ -276,7 +272,6 @@ pub enum Message {
     GooglePulled(Result<(String, Vec<(String, String)>), crate::modules::google_tasks::Error>),
     GoogleApplied(Box<sync::Applied>),
     OpenOnlineAccounts,
-    Fullscreen(crate::modules::fullscreen::Covered),
 }
 
 impl cosmic::Application for Island {
@@ -306,7 +301,6 @@ impl cosmic::Application for Island {
             config_handle: cosmic_config::Config::new(APP_ID, config::CONFIG_VERSION).ok(),
             time_config: config::load(config::TIME_APPLET_ID, 1),
             panel: PanelGeometry::load(),
-            panel_room: PanelKeys::load().room(),
             locale: clock::system_locale(),
             now: Local::now(),
             outputs: Vec::new(),
@@ -338,7 +332,6 @@ impl cosmic::Application for Island {
             todo_editing: None,
             ticked: HashMap::new(),
             google: Default::default(),
-            covered: Default::default(),
         };
         let mut island = island;
         if flags.expand.is_none() {
@@ -468,11 +461,14 @@ impl cosmic::Application for Island {
                 return Task::batch(surfaces.into_iter().map(|id| self.destroy_surface(id)));
             }
             Message::Config(config) => {
-                let outputs_changed = config.outputs != self.config.outputs
-                    || config.hide_in_fullscreen != self.config.hide_in_fullscreen;
+                let outputs_changed = config.outputs != self.config.outputs;
+                let layer_changed = config.hide_in_fullscreen != self.config.hide_in_fullscreen;
                 self.config = config;
                 if !self.shows(self.tab) {
                     self.tab = self.first_tab();
+                }
+                if layer_changed {
+                    return self.recreate_surfaces();
                 }
                 if outputs_changed {
                     return self.reconcile_surfaces();
@@ -681,10 +677,10 @@ impl cosmic::Application for Island {
                 self.save_shelf();
             }
             Message::Share(index) => {
-                if let Some(target) = self.share_targets.get(index) {
-                    let ShareTarget::KdeConnect { id, .. } = target;
-                    self.sends
-                        .insert(id.clone(), crate::modules::localsend::SendEvent::Done);
+                if let Some(target) = self.share_targets.get(index).cloned() {
+                    use crate::modules::localsend::SendEvent;
+                    let ShareTarget::KdeConnect { id, .. } = target.clone();
+                    self.sends.insert(id.clone(), SendEvent::Waiting);
                     let paths: Vec<_> = self
                         .shelves
                         .current()
@@ -692,9 +688,16 @@ impl cosmic::Application for Island {
                         .iter()
                         .filter_map(|i| i.path.clone())
                         .collect();
-                    if let Err(err) = target.share(&paths) {
-                        tracing::error!("sharing with {} failed: {err}", target.label());
-                    }
+                    return cosmic::task::future(async move {
+                        let event = match target.share(paths).await {
+                            Ok(()) => SendEvent::Done,
+                            Err(err) => {
+                                tracing::error!("sharing with {} failed: {err}", target.label());
+                                SendEvent::Failed(err)
+                            }
+                        };
+                        Message::SendUpdate(id, event)
+                    });
                 }
             }
             Message::OpenShare => {
@@ -746,14 +749,10 @@ impl cosmic::Application for Island {
                 self.share_targets = targets;
             }
             Message::PanelConfig(keys) => {
-                self.panel_room = keys.room();
                 let panel = PanelGeometry::from_keys(&keys);
                 if panel != self.panel {
                     self.panel = panel;
-                    // Placement is fixed when a layer surface is created: recreate them all.
-                    let ids: Vec<_> = self.outputs.iter_mut().filter_map(|o| o.surface.take()).collect();
-                    let destroy = Task::batch(ids.into_iter().map(|id| self.destroy_surface(id)));
-                    return destroy.chain(self.reconcile_surfaces());
+                    return self.recreate_surfaces();
                 }
             }
             Message::Ipc(crate::ipc::Event::Ready(connection)) => {
@@ -844,18 +843,18 @@ impl cosmic::Application for Island {
             Message::GoogleApplied(applied) => return self.applied(*applied),
             Message::OpenOnlineAccounts => {
                 // GNOME Settings only runs where it thinks it is in GNOME.
-                if let Err(err) = std::process::Command::new("gnome-control-center")
-                    .arg("online-accounts")
-                    .env("XDG_CURRENT_DESKTOP", "GNOME")
-                    .spawn()
-                {
+                let mut command = if crate::in_flatpak() {
+                    let mut command = std::process::Command::new("flatpak-spawn");
+                    command.args(["--host", "--env=XDG_CURRENT_DESKTOP=GNOME", "gnome-control-center"]);
+                    command
+                } else {
+                    let mut command = std::process::Command::new("gnome-control-center");
+                    command.env("XDG_CURRENT_DESKTOP", "GNOME");
+                    command
+                };
+                if let Err(err) = command.arg("online-accounts").spawn() {
                     tracing::warn!("cannot open Online Accounts: {err}");
                 }
-            }
-            Message::Fullscreen(covered) => {
-                tracing::debug!("fullscreen windows cover {covered:?}");
-                self.covered = covered;
-                return self.reconcile_surfaces();
             }
             Message::CalendarShift(delta) => {
                 self.calendar_month =
@@ -920,7 +919,6 @@ impl cosmic::Application for Island {
             }),
             Subscription::run(media::watch).map(Message::Media),
             Subscription::run(crate::ipc::serve).map(Message::Ipc),
-            Subscription::run(crate::modules::fullscreen::watch).map(Message::Fullscreen),
             self.core
                 .watch_config::<PanelKeys>(PANEL_CONFIG_ID)
                 .map(|update| Message::PanelConfig(update.config)),
@@ -1104,17 +1102,6 @@ impl Island {
                 .is_some_and(|n| names.iter().any(|m| m == n))
         };
         let first = || self.outputs.first().is_some_and(|o| o.output == entry.output);
-        if self.config.hide_in_fullscreen {
-            // A single island on the active output steps aside for a focused fullscreen window.
-            let covered = if self.active_output_only() {
-                self.covered.focused
-            } else {
-                entry.name.as_ref().is_some_and(|n| self.covered.outputs.contains(n))
-            };
-            if covered {
-                return false;
-            }
-        }
         match &self.config.outputs {
             Outputs::All => true,
             // The active output gets a single surface placed by the compositor.
@@ -1135,6 +1122,13 @@ impl Island {
             Outputs::FollowPanel => matches!(self.panel.output, CosmicPanelOuput::Active),
             _ => false,
         }
+    }
+
+    /// Layer and placement are fixed when a layer surface is created: makes them anew.
+    fn recreate_surfaces(&mut self) -> Task<Message> {
+        let ids: Vec<_> = self.outputs.iter_mut().filter_map(|o| o.surface.take()).collect();
+        let destroy = Task::batch(ids.into_iter().map(|id| self.destroy_surface(id)));
+        destroy.chain(self.reconcile_surfaces())
     }
 
     /// Creates and destroys surfaces so that exactly the wanted outputs have one.
@@ -1182,12 +1176,19 @@ impl Island {
             },
         );
         let top = self.panel.top as i32;
+        // On the top layer, like the panel, the compositor hides the island behind a
+        // focused fullscreen window; it is mapped after the panel, so it stays above it.
+        let layer = if self.config.hide_in_fullscreen {
+            Layer::Top
+        } else {
+            Layer::Overlay
+        };
         cosmic::task::message(cosmic::Action::Cosmic(cosmic::app::Action::Surface(
             app_layer_shell::<Island>(
                 |_| cosmic::surface::action::LiveSettings::default(),
                 move |_| SctkLayerSurfaceSettings {
                     id,
-                    layer: Layer::Overlay,
+                    layer,
                     keyboard_interactivity: KeyboardInteractivity::None,
                     input_zone: Some(Vec::new()),
                     anchor: Anchor::TOP,
@@ -1390,12 +1391,7 @@ impl Island {
 }
 
 fn detect_share_targets() -> Task<Message> {
-    cosmic::task::future(async {
-        let targets = tokio::task::spawn_blocking(shelf::detect_share_targets)
-            .await
-            .unwrap_or_default();
-        Message::ShareTargets(targets)
-    })
+    cosmic::task::future(async { Message::ShareTargets(shelf::detect_share_targets().await) })
 }
 
 fn delayed(delay: Duration, message: Message) -> Task<Message> {

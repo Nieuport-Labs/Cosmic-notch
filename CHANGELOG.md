@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- The panel applet starts the island, on the connection to the compositor the panel gives its
+  applets. The island no longer starts from autostart; add the applet to the middle of the panel.
+- Ready for a Flatpak: no helper programs needed.
+  - The bars read the sound through libpulse-simple instead of `parec`.
+  - KDE Connect is used over D-Bus.
+  - Online Accounts open through `flatpak-spawn` inside a Flatpak.
+- Hiding behind fullscreen windows is left to the compositor, as for the panel, so the island no
+  longer follows windows itself.
+- A full-color app icon.
+
 ## 0.1.0 – 2026-10-18
 
 First release.

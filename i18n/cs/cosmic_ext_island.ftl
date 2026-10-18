@@ -4,8 +4,6 @@ nothing-playing = Nic nehraje
 shelf-empty = Sem přetáhni soubory
 
 displays = Monitory
-panel-covered = Applety uprostřed panelu jsou schované pod ostrovem. Applet Dynamický ostrov jim udělá místo a odsune je stranou.
-panel-keep-room = Přidat applet Dynamický ostrov do panelu
 show-on = Zobrazit na
 outputs-follow-panel = Stejných monitorech jako panel
 outputs-all = Všech monitorech

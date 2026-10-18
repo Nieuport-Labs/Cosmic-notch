@@ -4,7 +4,7 @@ Architecture: @arch@
 Maintainer: Jiří Čepelka <jirkacepelka@gmail.com>
 Installed-Size: @size@
 Depends: @depends@, cosmic-panel
-Recommends: pulseaudio-utils
+Recommends: libpulse0
 Suggests: gnome-online-accounts, gnome-control-center, kdeconnect
 Section: x11
 Priority: optional
@@ -15,5 +15,4 @@ Description: Dynamic Island for the COSMIC desktop
  with synced lyrics, a shelf for files, a calendar and a to-do list that can
  sync with Google Tasks. It follows the COSMIC theme.
  .
- pulseaudio-utils provides parec, which the bars next to the playing track
- read the sound from.
+ Add the Dynamic Island applet to the middle of the panel to start it.

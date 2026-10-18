@@ -10,3 +10,9 @@ pub mod island;
 pub mod modules;
 pub mod panel;
 pub mod thumbnail;
+
+/// Whether the island runs as a Flatpak, where host programs are started
+/// through `flatpak-spawn --host`.
+pub fn in_flatpak() -> bool {
+    std::path::Path::new("/.flatpak-info").exists()
+}

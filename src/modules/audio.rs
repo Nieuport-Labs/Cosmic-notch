@@ -2,17 +2,14 @@
 
 //! Levels of what the speakers play, for the bars next to the playing track.
 //!
-//! Records the monitor of the default output through `parec` (PipeWire's
-//! PulseAudio layer) only while something plays, and splits each block of
-//! samples into a few frequency bands.
+//! Records the monitor of the default output only while something plays, and
+//! splits each block of samples into a few frequency bands.
 
-use std::process::Stdio;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use cosmic::iced::futures::{SinkExt, Stream, channel::mpsc};
-use tokio::io::AsyncReadExt;
 
 pub const BANDS: usize = 6;
 pub type Levels = [f32; BANDS];
@@ -38,7 +35,25 @@ const UNSEEN_CHANGE: f32 = 0.01;
 pub fn levels() -> impl Stream<Item = Levels> {
     cosmic::iced::stream::channel(4, |mut output: mpsc::Sender<Levels>| async move {
         loop {
-            if let Err(err) = record(&mut output).await {
+            // Reading blocks until the sound is played, so it runs on a thread of its own.
+            let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+            let recorder = std::thread::Builder::new()
+                .name("audio-levels".into())
+                .spawn(move || record(&tx));
+            let recorder = match recorder {
+                Ok(handle) => handle,
+                Err(err) => {
+                    tracing::warn!("audio levels unavailable: {err}");
+                    return std::future::pending().await;
+                }
+            };
+            while let Some(levels) = rx.recv().await {
+                if output.send(levels).await.is_err() {
+                    // The bars are gone; the recorder stops at its next block.
+                    return;
+                }
+            }
+            if let Ok(Err(err)) = recorder.join() {
                 tracing::warn!("audio levels unavailable: {err}");
             }
             let _ = output.send([0.0; BANDS]).await;
@@ -47,36 +62,23 @@ pub fn levels() -> impl Stream<Item = Levels> {
     })
 }
 
-async fn record(output: &mut mpsc::Sender<Levels>) -> std::io::Result<()> {
-    let mut child = tokio::process::Command::new("parec")
-        .args([
-            "--device=@DEFAULT_MONITOR@",
-            "--raw",
-            "--format=s16le",
-            "--channels=1",
-            &format!("--rate={RATE}"),
-            "--latency-msec=30",
-            "--client-name=Dynamic Island",
-            "--stream-name=Bars",
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()?;
-    let mut stdout = child.stdout.take().expect("stdout is piped");
-
+fn record(output: &tokio::sync::mpsc::Sender<Levels>) -> Result<(), String> {
+    let mut recording = super::pulse::Recording::monitor(RATE as u32, BLOCK)?;
     let mut analyzer = Analyzer::default();
-    let mut bytes = vec![0u8; BLOCK * 2];
+    let mut raw = [0i16; BLOCK];
     let mut samples = [0.0f32; BLOCK];
     let mut sent: Option<Levels> = None;
     loop {
-        stdout.read_exact(&mut bytes).await?;
-        for (sample, b) in samples.iter_mut().zip(bytes.as_chunks::<2>().0) {
-            *sample = f32::from(i16::from_le_bytes(*b)) / 32768.0;
+        recording.read(&mut raw)?;
+        for (sample, raw) in samples.iter_mut().zip(raw) {
+            *sample = f32::from(raw) / 32768.0;
         }
         let levels = analyzer.push(&samples);
         if !SHOWN.load(Ordering::Relaxed) {
             sent = None;
+            if output.is_closed() {
+                return Ok(());
+            }
             continue;
         }
         // Every update redraws the island; skip the ones nobody could see.
@@ -89,7 +91,7 @@ async fn record(output: &mut mpsc::Sender<Levels>) -> std::io::Result<()> {
             continue;
         }
         sent = Some(levels);
-        if output.send(levels).await.is_err() {
+        if output.blocking_send(levels).is_err() {
             return Ok(());
         }
     }

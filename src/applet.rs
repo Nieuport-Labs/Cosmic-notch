@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 //! The panel applet: keeps room in the panel where the island floats, and
-//! starts the island daemon through D-Bus activation when it is not running.
+//! starts the island daemon when it is not running.
 
 use cosmic::app::{Core, Task};
 use cosmic::iced::{Length, Subscription};
@@ -10,6 +10,7 @@ use cosmic::{Element, widget};
 pub const APPLET_ID: &str = "io.github.jiricepelka.CosmicExtIsland.Applet";
 
 pub fn run() -> cosmic::iced::Result {
+    crate::ipc::take_privileged_socket();
     cosmic::applet::run::<Applet>(())
 }
 

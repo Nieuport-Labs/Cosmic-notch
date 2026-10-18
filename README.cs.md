@@ -18,8 +18,8 @@ ledové sklo (frosted) a zaoblení. Změny v Nastavení COSMIC se projeví okam�
 
 | Binárka | Co dělá |
 | --- | --- |
-| `cosmic-ext-island` | Démon. Na každém monitoru vytvoří layer-surface ve vrstvě Overlay nad panelem a kreslí ostrov. |
-| `cosmic-ext-island-applet` | Applet do středu panelu. Drží v panelu místo široké jako ostrov. Když démon neběží, spustí ho přes D-Bus. |
+| `cosmic-ext-island-applet` | Applet do středu panelu. Drží v panelu místo široké jako ostrov, aby se pod něj nedostaly jiné applety, a spouští ostrov. |
+| `cosmic-ext-island` | Samotný ostrov. Spouští ho applet na spojení s kompozitorem, které panel appletům dává, takže smí kreslit přes panel, i jako Flatpak. Na každém monitoru vytvoří jednu layer-surface nad panelem. |
 
 ## Sestavení a spuštění z repozitáře
 
@@ -49,24 +49,28 @@ tlumení 0,8) při otevírání, bez překmitu (tlumení 1,0) při zavírání, 
 just install
 ```
 
-Nainstaluje se do `~/.local` (bez sudo), včetně autostartu a souboru pro D-Bus aktivaci.
+Nainstaluje se do `~/.local` (bez sudo).
 
 Systémová instalace (pro všechny uživatele): `just build-release && sudo just prefix=/usr install`.
 Balík `.deb`: `just deb`, výsledek je v `target/debian`.
 
-Pak:
-1. Odhlas se a přihlas, nebo spusť `cosmic-ext-island` ručně.
-2. Pokud máš uprostřed panelu applety (třeba datum a čas), ostrov je zakryje. V nastavení ostrova
-   (sekce Monitory) je tlačítko, které do panelu přidá applet *Dynamický ostrov*; ten ostrovu drží
-   místo a ostatní applety odsune stranou. Jde to i ručně v **Nastavení → Plocha → Panel → Applety**.
-   Applet s datem a časem můžeš odebrat, ostrov ukazuje datum a čas sám.
+Pak v **Nastavení → Plocha → Panel → Applety** přidej applet *Dynamický ostrov* do **středu**
+panelu. Applet ostrov spustí. Applet s datem a časem můžeš odebrat, ostrov ukazuje datum a čas sám.
+
+### Flatpak
+
+Složka `flatpak/` obsahuje manifest pro [repozitář COSMIC Flatpak](https://github.com/pop-os/cosmic-flatpak)
+a Rust zdroje, ze kterých se staví bez internetu (`cargo-sources.json`, vzniká z `Cargo.lock`
+nástrojem [flatpak-cargo-generator](https://github.com/flatpak/flatpak-builder-tools/tree/master/cargo);
+při každé změně `Cargo.lock` ho vygeneruj znovu). Po pushi vydání připraví `just flatpak-pr`
+složku pro pull request do toho repozitáře, s manifestem ukazujícím na pushnutý commit.
 
 ### Závislosti za běhu
 
 - COSMIC (cosmic-comp a cosmic-panel), Wayland.
-- `parec` (balík `pulseaudio-utils`, funguje i s PipeWire) pro pruhy u skladby. Bez něj pruhy stojí.
+- `libpulse-simple` (balík `libpulse0`, funguje i s PipeWire) pro pruhy u skladby. Bez něj pruhy stojí.
 - Pro Google Tasks GNOME Online Accounts a `gnome-control-center`.
-- Volitelně KDE Connect (`kdeconnect-cli`) pro posílání souborů. LocalSend na tomto počítači není potřeba.
+- Volitelně KDE Connect pro posílání souborů. LocalSend na tomto počítači není potřeba.
 
 Odinstalace: `just uninstall`.
 
@@ -108,8 +112,8 @@ Odinstalace: `just uninstall`.
   tam pošle interpreta, název, album a délku skladby, proto jsou ve výchozím stavu vypnuté
   a zapínají se v nastavení. Nalezené texty se
   ukládají do `~/.cache/cosmic-ext-island/lyrics`.
-- **Pruhy u skladby** ukazují skutečný zvuk: ostrov při přehrávání čte monitor výchozího výstupu přes
-  `parec` (PipeWire). V mixéru se proto objeví nahrávací proud „Dynamic Island“, jen když něco hraje.
+- **Pruhy u skladby** ukazují skutečný zvuk: ostrov při přehrávání čte monitor výchozího výstupu.
+  V mixéru se proto objeví nahrávací proud „Dynamic Island“, jen když něco hraje.
 - **Klávesová zkratka**: v Nastavení → Klávesnice → Vlastní zkratky přidej příkaz:
 
   ```bash

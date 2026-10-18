@@ -4,7 +4,6 @@
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use cosmic::iced::clipboard::mime::{AllowedMimeTypes, AsMimeTypes};
 
@@ -381,6 +380,8 @@ pub enum ShareTarget {
     KdeConnect { id: String, name: String },
 }
 
+const KDECONNECT: &str = "org.kde.kdeconnect";
+
 impl ShareTarget {
     pub fn label(&self) -> String {
         match self {
@@ -388,19 +389,52 @@ impl ShareTarget {
         }
     }
 
-    pub fn share(&self, paths: &[PathBuf]) -> std::io::Result<()> {
-        match self {
-            Self::KdeConnect { id, .. } => {
-                for path in paths {
-                    Command::new("kdeconnect-cli")
-                        .args(["--device", id, "--share"])
-                        .arg(path)
-                        .spawn()?;
-                }
-            }
+    /// Sends files to the device, over KDE Connect's D-Bus interface, or with
+    /// `kdeconnect-cli` where that is all there is.
+    pub async fn share(&self, paths: Vec<PathBuf>) -> Result<(), String> {
+        let Self::KdeConnect { id, .. } = self;
+        if kdeconnect_running().await {
+            let connection = super::media::connection().await.map_err(|e| e.to_string())?;
+            let urls: Vec<String> = paths
+                .iter()
+                .map(|p| format!("file://{}", p.display()))
+                .collect();
+            connection
+                .call_method(
+                    Some(KDECONNECT),
+                    format!("/modules/kdeconnect/devices/{id}/share").as_str(),
+                    Some("org.kde.kdeconnect.device.share"),
+                    "shareUrls",
+                    &(urls,),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        for path in paths {
+            tokio::process::Command::new("kdeconnect-cli")
+                .args(["--device", id, "--share"])
+                .arg(path)
+                .status()
+                .await
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
     }
+}
+
+/// Whether the KDE Connect daemon runs; asking it something would start it.
+async fn kdeconnect_running() -> bool {
+    let Ok(connection) = super::media::connection().await else {
+        return false;
+    };
+    let Ok(dbus) = zbus::fdo::DBusProxy::new(connection).await else {
+        return false;
+    };
+    let Ok(name) = zbus::names::BusName::try_from(KDECONNECT) else {
+        return false;
+    };
+    dbus.name_has_owner(name).await.unwrap_or(false)
 }
 
 fn in_path(program: &str) -> bool {
@@ -408,18 +442,47 @@ fn in_path(program: &str) -> bool {
         .is_some_and(|paths| std::env::split_paths(&paths).any(|p| p.join(program).is_file()))
 }
 
-/// Finds paired KDE Connect devices. Blocking: run off the UI thread.
+/// Finds paired KDE Connect devices that are in reach.
 /// (LocalSend devices are found by [`super::localsend`].)
-pub fn detect_share_targets() -> Vec<ShareTarget> {
-    let mut targets = Vec::new();
-    if in_path("kdeconnect-cli")
-        && let Ok(output) = Command::new("kdeconnect-cli")
-            .args(["--list-available", "--id-name-only"])
-            .output()
-    {
-        targets.extend(parse_kdeconnect_devices(&String::from_utf8_lossy(&output.stdout)));
+pub async fn detect_share_targets() -> Vec<ShareTarget> {
+    if kdeconnect_running().await {
+        let devices = async {
+            let connection = super::media::connection().await.ok()?;
+            let reply = connection
+                .call_method(
+                    Some(KDECONNECT),
+                    "/modules/kdeconnect",
+                    Some("org.kde.kdeconnect.daemon"),
+                    "deviceNames",
+                    &(true, true),
+                )
+                .await
+                .ok()?;
+            reply.body().deserialize::<std::collections::HashMap<String, String>>().ok()
+        }
+        .await;
+        return devices.map(kdeconnect_devices).unwrap_or_default();
     }
+    if !in_path("kdeconnect-cli") {
+        return Vec::new();
+    }
+    match tokio::process::Command::new("kdeconnect-cli")
+        .args(["--list-available", "--id-name-only"])
+        .output()
+        .await
+    {
+        Ok(output) => parse_kdeconnect_devices(&String::from_utf8_lossy(&output.stdout)).collect(),
+        Err(_) => Vec::new(),
+    }
+}
 
+/// Devices by id, as KDE Connect's daemon lists them, sorted by name.
+fn kdeconnect_devices(devices: std::collections::HashMap<String, String>) -> Vec<ShareTarget> {
+    let mut targets: Vec<_> = devices
+        .into_iter()
+        .map(|(id, name)| ShareTarget::KdeConnect { id, name })
+        .collect();
+    targets.sort_by_key(ShareTarget::label);
     targets
 }
 
@@ -556,6 +619,15 @@ mod tests {
         assert!(item.name.starts_with("Nákup mléko chleba ("), "{}", item.name);
         assert_eq!(item.text.as_deref(), Some("Nákup:  mléko / chleba\n"));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn kdeconnect_devices_by_name() {
+        let devices = kdeconnect_devices(
+            [("b1".to_string(), "Pixel".to_string()), ("a2".to_string(), "Laptop".to_string())]
+                .into(),
+        );
+        assert_eq!(devices.iter().map(ShareTarget::label).collect::<Vec<_>>(), ["Laptop", "Pixel"]);
     }
 
     #[test]

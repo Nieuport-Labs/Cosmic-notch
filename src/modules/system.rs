@@ -174,12 +174,42 @@ fn disk_space(mount: &str) -> Option<Disk> {
     })
 }
 
+/// Where a Flatpak sees the host's root filesystem (with `--filesystem=host:ro`).
+const HOST_ROOT: &str = "/run/host/root";
+
 pub fn disks() -> Vec<Disk> {
+    use std::os::unix::fs::MetadataExt;
     let mounts = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
-    disk_mounts(&mounts)
+    let mut paths = disk_mounts(&mounts);
+    if crate::in_flatpak() {
+        // The sandbox's own mounts are the runtime's; of the rest, the user's
+        // disks keep their paths and the host's root is elsewhere.
+        paths.retain(|m| sandbox_user_mount(m));
+        paths.insert(0, HOST_ROOT.to_string());
+    }
+    let mut devices = Vec::new();
+    paths
         .iter()
+        .filter(|m| {
+            // Paths of one filesystem share their space; show it once.
+            let device = std::fs::metadata(m).map(|m| m.dev()).ok();
+            let new = !devices.contains(&device);
+            devices.push(device);
+            new
+        })
         .filter_map(|m| disk_space(m))
+        .map(|disk| match disk.mount.as_str() {
+            HOST_ROOT => Disk { mount: "/".into(), ..disk },
+            _ => disk,
+        })
         .collect()
+}
+
+/// Mounts of the user's disks inside a Flatpak sandbox.
+fn sandbox_user_mount(mount: &str) -> bool {
+    ["/home", "/media", "/mnt", "/run/media"]
+        .iter()
+        .any(|p| mount == *p || mount.strip_prefix(p).is_some_and(|rest| rest.starts_with('/')))
 }
 
 /// Average current clock of all CPU cores in GHz, from cpufreq.
@@ -470,6 +500,14 @@ mod tests {
              SwapTotal:       2000000 kB\nSwapFree:        1500000 kB\n",
         );
         assert_eq!(memory.used(), 10_000_000 * 1024);
+    }
+
+    #[test]
+    fn user_mounts_in_a_sandbox() {
+        assert!(sandbox_user_mount("/home"));
+        assert!(sandbox_user_mount("/run/media/jirka/USB"));
+        assert!(!sandbox_user_mount("/usr"));
+        assert!(!sandbox_user_mount("/homework"));
     }
 
     #[test]

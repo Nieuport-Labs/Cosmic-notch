@@ -59,6 +59,7 @@
       <image>https://raw.githubusercontent.com/Nieuport-Labs/Cosmic-notch/main/res/screenshots/compact.png</image>
     </screenshot>
   </screenshots>
+  <icon type="stock">io.github.jiricepelka.CosmicExtIsland</icon>
   <launchable type="desktop-id">io.github.jiricepelka.CosmicExtIsland.desktop</launchable>
   <provides>
     <id>com.system76.CosmicApplet</id>

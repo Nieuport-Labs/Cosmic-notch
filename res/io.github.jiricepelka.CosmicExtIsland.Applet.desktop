@@ -12,4 +12,5 @@ Icon=io.github.jiricepelka.CosmicExtIsland-symbolic
 StartupNotify=false
 NoDisplay=true
 X-CosmicApplet=true
+X-HostWaylandDisplay=true
 X-OverflowPriority=10

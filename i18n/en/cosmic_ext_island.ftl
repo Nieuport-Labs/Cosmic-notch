@@ -4,8 +4,6 @@ nothing-playing = Nothing is playing
 shelf-empty = Drop files here
 
 displays = Displays
-panel-covered = Applets in the middle of the panel are hidden under the island. The Dynamic Island applet makes room and moves them aside.
-panel-keep-room = Add the Dynamic Island applet to the panel
 show-on = Show on
 outputs-follow-panel = Same displays as the panel
 outputs-all = All displays

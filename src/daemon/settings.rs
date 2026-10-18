@@ -26,7 +26,6 @@ pub enum Message {
     ShowSection(Section, bool),
     GoogleTasks(bool),
     OpenOnlineAccounts,
-    KeepPanelRoom,
 }
 
 const MODE_FOLLOW_PANEL: usize = 0;
@@ -81,7 +80,7 @@ impl Island {
             Message::CollapseDelay(ms) => self.write(|c, h| c.set_collapse_delay_ms(h, ms)),
             Message::HideInFullscreen(v) => {
                 self.write(|c, h| c.set_hide_in_fullscreen(h, v));
-                return self.reconcile_surfaces();
+                return self.recreate_surfaces();
             }
             Message::ShowCover(v) => self.write(|c, h| c.set_show_cover(h, v)),
             Message::ShowTitle(v) => self.write(|c, h| c.set_show_title(h, v)),
@@ -104,11 +103,6 @@ impl Island {
             }
             Message::OpenOnlineAccounts => {
                 return cosmic::task::message(cosmic::Action::App(super::Message::OpenOnlineAccounts));
-            }
-            Message::KeepPanelRoom => {
-                if let Err(err) = crate::panel::PanelKeys::load().keep_room() {
-                    tracing::error!("cannot add the applet to the panel: {err}");
-                }
             }
             Message::Lyrics(v) => {
                 self.write(|c, h| c.set_lyrics(h, v));
@@ -171,19 +165,6 @@ impl Island {
         let mut displays = settings::section()
             .title(fl!("displays"))
             .add(settings::item(fl!("show-on"), modes));
-        // Applets in the middle of the panel would sit under the island.
-        if self.panel_room == crate::panel::Room::Covered {
-            displays = displays.add(
-                widget::Column::new()
-                    .push(widget::text::caption(fl!("panel-covered")))
-                    .push(
-                        widget::button::link(fl!("panel-keep-room"))
-                            .padding(0)
-                            .on_press(Message::KeepPanelRoom),
-                    )
-                    .spacing(spacing.space_xxxs),
-            );
-        }
         if let Outputs::Named(names) = &config.outputs {
             for name in self.outputs.iter().filter_map(|o| o.name.clone()) {
                 let enabled = names.contains(&name);

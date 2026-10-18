@@ -21,8 +21,6 @@ pub struct PanelKeys {
     pub size: PanelSize,
     pub padding: u32,
     pub output: CosmicPanelOuput,
-    /// Applets in the middle of the panel, which the island covers.
-    pub plugins_center: Option<Vec<String>>,
 }
 
 impl Default for PanelKeys {
@@ -34,50 +32,13 @@ impl Default for PanelKeys {
             size: PanelSize::S,
             padding: 0,
             output: CosmicPanelOuput::All,
-            plugins_center: None,
         }
     }
-}
-
-/// Whether the island has the middle of the panel to itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Room {
-    /// The placeholder applet keeps room as wide as the island.
-    Kept,
-    /// Nothing is in the middle, or the panel is not at the top.
-    Free,
-    /// Applets in the middle are hidden under the island.
-    Covered,
 }
 
 impl PanelKeys {
     pub fn load() -> Self {
         crate::config::load(PANEL_CONFIG_ID, Self::VERSION)
-    }
-
-    pub fn room(&self) -> Room {
-        let center = self.plugins_center.as_deref().unwrap_or_default();
-        if center.iter().any(|a| a == crate::applet::APPLET_ID) {
-            Room::Kept
-        } else if center.is_empty() || !matches!(self.anchor, PanelAnchor::Top) {
-            Room::Free
-        } else {
-            Room::Covered
-        }
-    }
-
-    /// Puts the placeholder applet in the middle of the panel's center applets.
-    pub fn keep_room(&self) -> Result<(), cosmic_config::Error> {
-        let mut center = self.plugins_center.clone().unwrap_or_default();
-        if center.iter().any(|a| a == crate::applet::APPLET_ID) {
-            return Ok(());
-        }
-        center.insert(center.len() / 2, crate::applet::APPLET_ID.to_owned());
-        cosmic_config::ConfigSet::set(
-            &cosmic_config::Config::new(PANEL_CONFIG_ID, Self::VERSION)?,
-            "plugins_center",
-            Some(center),
-        )
     }
 }
 
@@ -134,17 +95,6 @@ mod tests {
         // S panel: 20 px icon + 2 × 10 px padding = 40 px, island inset by 4 px.
         assert_eq!(g.compact_height, 32);
         assert_eq!(g.top, 8);
-    }
-
-    #[test]
-    fn room_in_the_panel() {
-        let keys = |center: &[&str]| PanelKeys {
-            plugins_center: Some(center.iter().map(|s| s.to_string()).collect()),
-            ..PanelKeys::default()
-        };
-        assert_eq!(keys(&[]).room(), Room::Free);
-        assert_eq!(keys(&["com.system76.CosmicAppletTime"]).room(), Room::Covered);
-        assert_eq!(keys(&[crate::applet::APPLET_ID]).room(), Room::Kept);
     }
 
     #[test]

@@ -20,8 +20,8 @@ fullscreen videos and games.
 
 | Binary | What it does |
 | --- | --- |
-| `cosmic-ext-island` | The daemon. Puts a layer surface on the Overlay layer over the panel on each display and draws the island. |
-| `cosmic-ext-island-applet` | A panel applet for the middle of the panel. Keeps room as wide as the island, so other applets are not hidden under it, and starts the daemon over D-Bus when it is not running. |
+| `cosmic-ext-island-applet` | The panel applet. Keeps room in the middle of the panel as wide as the island, so other applets are not hidden under it, and starts the island. |
+| `cosmic-ext-island` | The island itself. Started by the applet on the connection to the compositor that the panel gives its applets, so it may draw over the panel, also as a Flatpak. Puts one layer surface over the panel on each display. |
 
 ## Install
 
@@ -31,7 +31,7 @@ You need Rust 1.88 or newer (from [rustup](https://rustup.rs)) and `just`:
 sudo apt install just pkg-config libxkbcommon-dev libwayland-dev
 ```
 
-Install for your user, into `~/.local` (no sudo), with autostart and D-Bus activation:
+Install for your user, into `~/.local` (no sudo):
 
 ```bash
 just install
@@ -49,22 +49,27 @@ A Debian package ends up in `target/debian`:
 just deb
 ```
 
-Then:
-1. Log out and back in, or run `cosmic-ext-island`.
-2. If you have applets in the middle of the panel (such as the date and time), the island covers
-   them. The island's settings (Displays section) have a button that adds the *Dynamic Island* applet
-   to the panel; it keeps room for the island and moves the others aside. You can also add it in
-   **Settings → Desktop → Panel → Applets**. The date and time applet can go: the island shows both.
+Then add the *Dynamic Island* applet to the **middle** of the panel in **Settings → Desktop →
+Panel → Applets**. The applet starts the island. The date and time applet can go: the island shows
+both.
 
 Uninstall with `just uninstall` (or `sudo just prefix=/usr uninstall`).
+
+### Flatpak
+
+`flatpak/` holds the manifest for the [COSMIC Flatpak repository](https://github.com/pop-os/cosmic-flatpak)
+and the Rust sources it builds from offline (`cargo-sources.json`, made from `Cargo.lock` with
+[flatpak-cargo-generator](https://github.com/flatpak/flatpak-builder-tools/tree/master/cargo);
+regenerate it whenever `Cargo.lock` changes). After pushing a release, `just flatpak-pr` writes the
+folder to submit to that repository, with the manifest pointing at the pushed commit.
 
 ### Runtime dependencies
 
 - COSMIC (cosmic-comp and cosmic-panel) on Wayland.
-- `parec` (package `pulseaudio-utils`, works with PipeWire) for the bars next to the playing track.
-  Without it the bars stand still.
+- `libpulse-simple` (package `libpulse0`, works with PipeWire) for the bars next to the playing
+  track. Without it the bars stand still.
 - GNOME Online Accounts and `gnome-control-center` for Google Tasks.
-- Optionally KDE Connect (`kdeconnect-cli`) to send files. LocalSend is not needed on this computer.
+- Optionally KDE Connect to send files. LocalSend is not needed on this computer.
 
 ## Using it
 
@@ -97,7 +102,7 @@ Uninstall with `just uninstall` (or `sudo just prefix=/usr uninstall`).
   task is struck through and slides away; untick it in time and it stays. Tasks are kept in
   cosmic-config state (`~/.local/state/cosmic/io.github.jiricepelka.CosmicExtIsland`).
 - **Bars next to the track** show the actual sound: while something plays, the island reads the
-  monitor of the default output through `parec`. A recording stream named "Dynamic Island" shows
+  monitor of the default output. A recording stream named "Dynamic Island" shows
   up in the mixer only then.
 - **Keyboard shortcut**: in Settings → Keyboard → Custom shortcuts, add the command:
 
