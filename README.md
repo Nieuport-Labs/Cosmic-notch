@@ -2,6 +2,10 @@
 
 English · [Česky](README.cs.md)
 
+![The compact island](res/screenshots/compact.png)
+
+![The home page](res/screenshots/home.png)
+
 A Dynamic Island for the COSMIC desktop (Pop!_OS 24.04). The island sits **over the top panel**:
 - at rest it shows the date and time,
 - while something plays, it adds the cover, "artist – title" and bars that follow the sound,
@@ -39,7 +43,7 @@ For all users:
 just build-release && sudo just prefix=/usr install
 ```
 
-A Debian package (needs `debhelper`) ends up in `target/debian`:
+A Debian package ends up in `target/debian`:
 
 ```bash
 just deb

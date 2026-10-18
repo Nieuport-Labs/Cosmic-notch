@@ -45,6 +45,7 @@ features = ["applet", "dbus-config", "multi-window", "tokio", "wayland", "winit"
 
 [profile.release]
 lto = "thin"
+strip = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }

@@ -1,4 +1,5 @@
 settings = Settings
+tab-home = Home
 nothing-playing = Nothing is playing
 shelf-empty = Drop files here
 

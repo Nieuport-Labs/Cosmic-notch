@@ -1,4 +1,5 @@
 settings = Nastavení
+tab-home = Domů
 nothing-playing = Nic nehraje
 shelf-empty = Sem přetáhni soubory
 

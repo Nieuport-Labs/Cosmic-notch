@@ -54,8 +54,21 @@ uninstall:
     rm -f "{{dest-sharedir}}/metainfo/{{appid}}.metainfo.xml"
     rm -f "{{dest-sharedir}}/dbus-1/services/{{appid}}.service"
 
-# Builds a .deb into target/debian (needs debhelper; Rust comes from rustup, so build deps are not checked).
-deb:
-    dpkg-buildpackage -b -us -uc -d
-    mkdir -p target/debian
-    mv ../{{name}}_*.deb ../{{name}}_*.buildinfo ../{{name}}_*.changes target/debian/
+# Builds a .deb into target/debian, from the release build.
+deb: build-release
+    #!/usr/bin/env bash
+    set -euo pipefail
+    umask 022
+    stage="target/debian/{{name}}"
+    rm -rf "$stage" && mkdir -p "$stage/DEBIAN"
+    just rootdir="$PWD/$stage" prefix=/usr install
+    install -Dm0644 res/deb/copyright "$stage/usr/share/doc/{{name}}/copyright"
+    version=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+    arch=$(dpkg --print-architecture)
+    # dpkg-shlibdeps wants a debian/control to sit next to; give it a minimal one.
+    shlibs=$(mktemp -d) && mkdir "$shlibs/debian" && printf 'Source: {{name}}\n\nPackage: {{name}}\nArchitecture: any\n' > "$shlibs/debian/control"
+    depends=$(cd "$shlibs" && dpkg-shlibdeps -O -e "$OLDPWD/$stage/usr/bin/{{name}}" -e "$OLDPWD/$stage/usr/bin/{{name}}-applet" 2>/dev/null | sed 's/^shlibs:Depends=//')
+    rm -rf "$shlibs"
+    size=$(du -sk --exclude=DEBIAN "$stage" | cut -f1)
+    sed -e "s|@version@|$version|" -e "s|@arch@|$arch|" -e "s|@depends@|$depends|" -e "s|@size@|$size|" res/deb/control.in > "$stage/DEBIAN/control"
+    dpkg-deb --root-owner-group --build "$stage" "target/debian/{{name}}_${version}_${arch}.deb"

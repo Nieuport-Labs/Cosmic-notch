@@ -2,6 +2,10 @@
 
 [English](README.md) · Česky
 
+![Kompaktní ostrov](res/screenshots/compact.png)
+
+![Domovská stránka](res/screenshots/home.png)
+
 Dynamic Island pro desktop COSMIC (Pop!_OS 24.04). Ostrov sedí **přes horní panel**:
 - v klidu ukazuje datum a čas,
 - při přehrávání obal, „interpret – skladba“ a pruhy,
@@ -48,7 +52,7 @@ just install
 Nainstaluje se do `~/.local` (bez sudo), včetně autostartu a souboru pro D-Bus aktivaci.
 
 Systémová instalace (pro všechny uživatele): `just build-release && sudo just prefix=/usr install`.
-Balík `.deb`: `just deb` (potřebuje `debhelper`), výsledek je v `target/debian`.
+Balík `.deb`: `just deb`, výsledek je v `target/debian`.
 
 Pak:
 1. Odhlas se a přihlas, nebo spusť `cosmic-ext-island` ručně.

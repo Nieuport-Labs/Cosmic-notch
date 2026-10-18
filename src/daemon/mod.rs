@@ -364,6 +364,7 @@ impl cosmic::Application for Island {
                 return self.sync_surfaces(Instant::now());
             }
             Message::Measured(id, size) => {
+                tracing::debug!("island content measures {size:?}");
                 if let Some(state) = self.surfaces.get_mut(&id) {
                     state.measured = size;
                     state.anim.go(state.target(), Instant::now());

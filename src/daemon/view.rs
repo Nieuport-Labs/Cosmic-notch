@@ -450,7 +450,7 @@ impl Island {
         let mut header = widget::Row::new();
         for section in Tab::SECTIONS.into_iter().filter(|t| self.shows(*t)) {
             let (icon, name) = match section {
-                Tab::Home => (icons::house(), fl!("section-home")),
+                Tab::Home => (icons::house(), fl!("tab-home")),
                 Tab::Media => (icons::named("audio-volume-high-symbolic"), fl!("section-media")),
                 Tab::Shelf => (icons::inbox(), fl!("section-shelf")),
                 Tab::Calendar => (icons::calendar(), fl!("section-calendar")),

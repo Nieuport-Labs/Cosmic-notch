@@ -41,6 +41,24 @@
   <supports>
     <control>pointing</control>
   </supports>
+  <screenshots>
+    <screenshot type="default">
+      <caption>The home page: CPU, network, memory, disks and a small player</caption>
+      <image>https://raw.githubusercontent.com/Nieuport-Labs/Cosmic-notch/main/res/screenshots/home.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Media controls with synced lyrics</caption>
+      <image>https://raw.githubusercontent.com/Nieuport-Labs/Cosmic-notch/main/res/screenshots/media.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>The calendar</caption>
+      <image>https://raw.githubusercontent.com/Nieuport-Labs/Cosmic-notch/main/res/screenshots/calendar.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>The compact island over the panel while music plays</caption>
+      <image>https://raw.githubusercontent.com/Nieuport-Labs/Cosmic-notch/main/res/screenshots/compact.png</image>
+    </screenshot>
+  </screenshots>
   <launchable type="desktop-id">io.github.jiricepelka.CosmicExtIsland.desktop</launchable>
   <provides>
     <id>com.system76.CosmicApplet</id>
