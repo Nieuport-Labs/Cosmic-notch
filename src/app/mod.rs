@@ -332,7 +332,11 @@ impl cosmic::Application for Island {
         &mut self.core
     }
 
-    fn init(core: Core, flags: Flags) -> (Self, Task<Message>) {
+    fn init(mut core: Core, flags: Flags) -> (Self, Task<Message>) {
+        // The island sets the blur region and corners of its popup itself, to
+        // the pill; libcosmic would blur and round the whole popup on its own.
+        core.set_auto_blur(Default::default());
+        core.set_auto_corner_radius(Default::default());
         let id = core.main_window_id().unwrap_or_else(window::Id::unique);
         let config: IslandConfig = config::load(APP_ID, config::CONFIG_VERSION);
         geometry::set_reduced_motion(config.reduce_motion);
@@ -1031,13 +1035,14 @@ impl cosmic::Application for Island {
         };
         let mut subscriptions = vec![
             Subscription::run_with(tick, clock::ticks).map(|()| Message::Tick),
-            cosmic::iced::event::listen_with(|event, status, _| match event {
+            cosmic::iced::event::listen_with(|event, status, window| match event {
+                // iced reports a popup's first configure as the window opening.
+                cosmic::iced::Event::Window(window::Event::Opened { .. }) => {
+                    Some(Message::PopupConfigured(window))
+                }
                 cosmic::iced::Event::PlatformSpecific(PlatformSpecific::Wayland(
                     wayland::Event::Popup(wayland::PopupEvent::Done, _, id),
                 )) => Some(Message::PopupClosed(id)),
-                cosmic::iced::Event::PlatformSpecific(PlatformSpecific::Wayland(
-                    wayland::Event::Popup(wayland::PopupEvent::Configured { .. }, _, id),
-                )) => Some(Message::PopupConfigured(id)),
                 cosmic::iced::Event::PlatformSpecific(PlatformSpecific::Wayland(
                     wayland::Event::BlurEnabled,
                 )) => Some(Message::SyncSurfaces),
