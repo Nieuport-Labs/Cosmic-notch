@@ -6,7 +6,8 @@
 
 ![Domovská stránka](res/screenshots/home.png)
 
-Dynamic Island pro desktop COSMIC (Pop!_OS 24.04). Ostrov sedí **přes horní panel**:
+Dynamic Island pro desktop COSMIC (Pop!_OS 24.04). Ostrov je **applet panelu**: přidej ho kamkoli
+do libovolného panelu, nahoře, dole i po straně, a ostatní applety mu udělají místo. Ostrov
 - v klidu ukazuje datum a čas,
 - při přehrávání obal, „interpret – skladba“ a pruhy,
 - po najetí myší se rozbalí na domovskou stránku, média, přihrádku souborů, kalendář a úkoly.
@@ -18,8 +19,7 @@ ledové sklo (frosted) a zaoblení. Změny v Nastavení COSMIC se projeví okam�
 
 | Binárka | Co dělá |
 | --- | --- |
-| `cosmic-ext-island-applet` | Applet do středu panelu. Drží v panelu místo široké jako ostrov, aby se pod něj nedostaly jiné applety, a spouští ostrov. |
-| `cosmic-ext-island` | Samotný ostrov. Spouští ho applet na spojení s kompozitorem, které panel appletům dává, takže smí kreslit přes panel, i jako Flatpak. Na každém monitoru vytvoří jednu layer-surface nad panelem. |
+| `cosmic-ext-island-applet` | Samotný ostrov. Kompaktní ostrov je přímo applet, takže ho panel řadí mezi ostatní applety; rozbalený ostrov je popup, který z něj vyroste. Když je zapnutá historie schránky, sleduje ji na neomezeném spojení, které panel appletům dává (funguje i ve Flatpaku). |
 
 ## Sestavení a spuštění z repozitáře
 
@@ -27,17 +27,13 @@ ledové sklo (frosted) a zaoblení. Změny v Nastavení COSMIC se projeví okam�
 sudo apt install just
 ```
 
-```bash
-just run
-```
-
-Volby pro vývoj a snímky obrazovky:
-
-- `--expand[=home|media|shelf|calendar|tasks]` spustí ostrov rovnou rozbalený.
-- `--expand=settings` otevře rovnou nastavení.
+Ostrov běží uvnitř panelu, takže ho nainstaluj (`just install`) a applet znovu načti. Pro snímky
+obrazovky spustí `COSMIC_EXT_ISLAND_EXPAND=home|media|shelf|calendar|tasks|settings` ostrov rovnou
+rozbalený na dané záložce a `COSMIC_EXT_ISLAND_LYRICS=1` na stránce s texty. Otevřít a zavřít ho jde
+i voláním D-Bus:
 
 ```bash
-just run --expand=calendar
+busctl --user call io.github.jiricepelka.CosmicExtIsland /io/github/jiricepelka/CosmicExtIsland io.github.jiricepelka.CosmicExtIsland Toggle
 ```
 
 Animace otevírání napodobuje [Boring Notch](https://boringnotch.com/): pružina (response 0,42 s,
@@ -54,8 +50,8 @@ Nainstaluje se do `~/.local` (bez sudo).
 Systémová instalace (pro všechny uživatele): `just build-release && sudo just prefix=/usr install`.
 Balík `.deb`: `just deb`, výsledek je v `target/debian`.
 
-Pak v **Nastavení → Plocha → Panel → Applety** přidej applet *Dynamický ostrov* do **středu**
-panelu. Applet ostrov spustí. Applet s datem a časem můžeš odebrat, ostrov ukazuje datum a čas sám.
+Pak v **Nastavení → Plocha → Panel → Applety** přidej applet *Dynamický ostrov* do panelu, kam
+chceš. Applet s datem a časem můžeš odebrat, ostrov ukazuje datum a čas sám.
 
 ### Flatpak
 
@@ -88,15 +84,20 @@ Odinstalace: `just uninstall`.
   přejmenuje, ikona koše vedle vybrané přihrádky ji smaže (neprázdnou až po potvrzení; soubory na
   disku zůstanou). Když soubor při tažení podržíš nad názvem přihrádky, přepne se na ni a soubor
   skončí v ní. Vyprázdnění a odeslání jsou ikony v horní liště.
+- **Historie schránky**: po zapnutí v nastavení drží první přihrádka *Schránka* posledních 50
+  kopií (text, obrázky, soubory); kliknutím se kopie vrátí do schránky. Co kopírují správci hesel,
+  se neukládá. Potřebuje, aby kompozitor povolil přístup ke schránce, což neomezené spojení panelu
+  umožňuje.
 - **Schránka a text**: v otevřené přihrádce **Ctrl+V** (nebo ikona schránky v liště) vloží, co je ve
   schránce: zkopírované soubory, obrázek (uloží se jako PNG) nebo text. Text jde do přihrádky i
   přetáhnout, třeba označený v prohlížeči. Z textu je kartička s náhledem; vytažením do editoru se
   vloží jako text, do složky jako soubor `.txt`, kliknutím se zkopíruje zpět do schránky. Kliknutí
   na soubor ho otevře. Vložené texty a obrázky se drží v `~/.local/share/cosmic-ext-island/snippets`
   a smažou se, jakmile nejsou v žádné přihrádce.
-- **Domů**: vytížení procesoru s historií, frekvencí a teplotou, rychlost sítě (stahování nahoru,
+- **Domů**: pozdrav podle denní doby s další událostí z Google Kalendáře, vytížení procesoru
+  s historií, frekvencí a teplotou, grafika (AMD a Intel), rychlost sítě (stahování nahoru,
   odesílání dolů), malý přehrávač a jedna karta s pamětí a disky. Pod tím je baterie a doba od
-  zapnutí. Údaje se čtou z `/proc` a `/sys` jednou za sekundu. Síťové disky se vynechávají, protože
+  zapnutí. Které karty se ukážou, se volí v nastavení. Údaje se čtou z `/proc` a `/sys` jednou za sekundu. Síťové disky se vynechávají, protože
   dotaz na volné místo by mohl viset.
 - **Úkoly**: napiš úkol a stiskni Enter. Dvojklik na úkol ho přejmenuje, křížek ho smaže. Po
   odškrtnutí políčko poskočí, text přeškrtne čára, úkol odjede doprava a seznam se zavře; když ho
@@ -106,9 +107,10 @@ Odinstalace: `just uninstall`.
   protokolem [LocalSend](https://localsend.org) (v2), na tomto počítači LocalSend být nemusí; na
   druhém zařízení stačí otevřená aplikace LocalSend. Kliknutím na zařízení se pošle celá přihrádka
   (složky i s obsahem), u zařízení je vidět stav: čeká na přijetí, odesláno x z y, hotovo. Spárovaná
-  zařízení KDE Connect se ukážou tamtéž.
+  zařízení KDE Connect se ukážou tamtéž; u každého je vidět, přes jaký protokol se pošle.
 - **Texty písní**: v záložce Média běží pod názvem aktuální řádek textu; tlačítko s mikrofonem
-  ukáže celý text, časovaný podle skladby. Texty pocházejí z [LRCLIB](https://lrclib.net) – ostrov
+  ukáže stránku s texty: řádek před, aktuální (větší a tučný) a řádek po plynule sjíždějí podle
+  skladby. Kliknutí na řádek přehraje od něj. Texty pocházejí z [LRCLIB](https://lrclib.net) – ostrov
   tam pošle interpreta, název, album a délku skladby, proto jsou ve výchozím stavu vypnuté
   a zapínají se v nastavení. Nalezené texty se
   ukládají do `~/.cache/cosmic-ext-island/lyrics`.
@@ -134,16 +136,24 @@ Nové, přejmenované, odškrtnuté a smazané úkoly jdou do Googlu hned. Sezna
 při otevření záložky Úkoly, každou minutu, dokud je otevřená, a jinak jednou za 10 minut. Úkoly vytvořené bez připojení se nahrají při další
 synchronizaci.
 
+## Google Kalendář
+
+Po zapnutí **Události z Google Kalendáře** v nastavení se v záložce Kalendář ukážou události
+hlavního kalendáře (den s událostí má tečku, kliknutím na den se vypíšou) a tlačítko **+** přidá
+novou (název, celý den nebo od–do). Přihlášení obstarává GNOME Online Accounts stejně jako u
+úkolů; u účtu nech zapnutý **Kalendář**. Události se stahují při otevření záložky, každou minutu,
+dokud je otevřená, a jinak jednou za 15 minut.
+
 ## Nastavení
 
 Ozubené kolo v rozbaleném ostrově přepne na stránku nastavení přímo v ostrově:
 - které části ostrov má (domů, média, přihrádka, kalendář, úkoly); poslední zapnutá vypnout nejde,
-- synchronizace úkolů s Google Tasks,
-- na kterých monitorech se ostrov zobrazí (stejně jako panel, všechny, aktivní, vybrané),
 - formát hodin (prázdné = podle appletu Čas v COSMICu),
-- prodlevy rozbalení a sbalení,
-- skrytí ostrova, když je na monitoru okno přes celou obrazovku (video, hra); výchozí zapnuto,
-- co ukazovat v kompaktním stavu.
+- prodlevy rozbalení a sbalení a režim bez animací,
+- co ukazovat v kompaktním stavu,
+- které karty má domovská stránka,
+- historii schránky,
+- Google Tasks a Google Kalendář, texty písní.
 
 Nastavení se ukládá přes cosmic-config pod `io.github.jiricepelka.CosmicExtIsland`.
 

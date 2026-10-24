@@ -6,22 +6,22 @@ English · [Česky](README.cs.md)
 
 ![The home page](res/screenshots/home.png)
 
-A Dynamic Island for the COSMIC desktop (Pop!_OS 24.04). The island sits **over the top panel**:
-- at rest it shows the date and time,
+A Dynamic Island for the COSMIC desktop (Pop!_OS 24.04). The island is a **panel applet**: add it
+anywhere in a panel, at the top, bottom or a side, and the other applets make room for it. It
+- at rest shows the date and time,
 - while something plays, it adds the cover, "artist – title" and bars that follow the sound,
-- point at it and it opens into a home page, media controls, a shelf for files, a calendar and a
+- opens, when you point at it, into a home page, media controls, a shelf for files, a calendar and a
   to-do list.
 
 It follows your COSMIC theme: interface font, accent color, light/dark mode, transparency, frosted
-glass and corner radius. Changes in COSMIC Settings show up right away. It steps aside for
-fullscreen videos and games.
+glass and corner radius. Changes in COSMIC Settings show up right away. It goes away with the panel
+in fullscreen videos and games. The settings have a mode without animations.
 
 ## Parts
 
 | Binary | What it does |
 | --- | --- |
-| `cosmic-ext-island-applet` | The panel applet. Keeps room in the middle of the panel as wide as the island, so other applets are not hidden under it, and starts the island. |
-| `cosmic-ext-island` | The island itself. Started by the applet on the connection to the compositor that the panel gives its applets, so it may draw over the panel, also as a Flatpak. Puts one layer surface over the panel on each display. |
+| `cosmic-ext-island-applet` | The island. The compact island is the applet itself, so the panel places it among the other applets; the expanded island is a popup that grows out of it. It also watches the clipboard (when its history is on) on the unrestricted connection the panel gives its applets, which works in a Flatpak too. |
 
 ## Install
 
@@ -49,9 +49,8 @@ A Debian package ends up in `target/debian`:
 just deb
 ```
 
-Then add the *Dynamic Island* applet to the **middle** of the panel in **Settings → Desktop →
-Panel → Applets**. The applet starts the island. The date and time applet can go: the island shows
-both.
+Then add the *Dynamic Island* applet to a panel in **Settings → Desktop → Panel → Applets**,
+wherever you like. The date and time applet can go: the island shows both.
 
 Uninstall with `just uninstall` (or `sudo just prefix=/usr uninstall`).
 
@@ -76,12 +75,14 @@ folder to submit to that repository, with the manifest pointing at the pushed co
 - **Hover**: after a short delay (300 ms by default) the island opens; it closes when the pointer leaves.
 - **Click**: opens the island and keeps it open. Another click or **Esc** closes it.
 - **Middle click**: play/pause.
-- **Home**: CPU use with history, clock speed and temperature, network speed (download up, upload
-  down), a small player whose background fills as the track plays, and one card with memory and
-  disks. Below that, the battery and uptime.
+- **Home**: a greeting by the time of day with the next event of Google Calendar, CPU use with
+  history, clock speed and temperature, the graphics card (AMD and Intel), network speed, a small
+  player whose background fills as the track plays, and one card with memory and disks. Below
+  that, the battery and uptime. The settings choose which cards show.
 - **Media**: cover, title, seeking and controls. With lyrics switched on in the settings, the line
-  being sung runs under the title and the microphone button shows the whole text, in time with the
-  track. Lyrics come from [LRCLIB](https://lrclib.net); the island sends it the artist, title, album
+  being sung runs under the title and the microphone button shows the lyrics page: the line before,
+  the one being sung (bigger and bold) and the one after scroll with the track. Click a line to
+  play from there. Lyrics come from [LRCLIB](https://lrclib.net); the island sends it the artist, title, album
   and length of the track, so lyrics are off until you switch them on.
 - **Shelf**: drag files onto the island. It opens on the shelf, swells a little and its border
   breathes in the accent color; when you let go, it swallows the file. The shelf shows photo
@@ -94,10 +95,16 @@ folder to submit to that repository, with the manifest pointing at the pushed co
     the clipboard: copied files, an image (kept as PNG) or text. Text can also be dragged in, for
     example selected in a browser. Pasted text and images are kept in
     `~/.local/share/cosmic-ext-island/snippets` and removed once no shelf holds them.
-  - **Send to a device**: the send icon lists devices nearby. The island speaks the
-    [LocalSend](https://localsend.org) protocol (v2) itself; the other device only needs the
-    LocalSend app open. Paired KDE Connect devices show up there too.
-- **Calendar**: the month, with today highlighted and the week number.
+  - **Clipboard history**: switch it on in the settings and the first shelf, *Clipboard*, keeps the
+    last 50 things you copied (text, images, files); a click copies one back. What password
+    managers copy is never kept. It needs the compositor to allow clipboard access, which the
+    panel's unrestricted connection does.
+  - **Send to a device**: the send icon lists devices nearby, each with the protocol it is reached
+    over. The island speaks the [LocalSend](https://localsend.org) protocol (v2) itself; the other
+    device only needs the LocalSend app open. Paired KDE Connect devices show up there too.
+- **Calendar**: the month, with today highlighted. With Google Calendar switched on in the
+  settings, days that have events get a dot, a click on a day lists its events and **+** adds one
+  (title, all day or from–to), through GNOME Online Accounts like Google Tasks.
 - **Tasks**: type a task and press Enter. A double click renames it, the cross deletes it. A ticked
   task is struck through and slides away; untick it in time and it stays. Tasks are kept in
   cosmic-config state (`~/.local/state/cosmic/io.github.jiricepelka.CosmicExtIsland`).
@@ -123,30 +130,35 @@ password.
 New, renamed, ticked and deleted tasks go to Google right away. Google's list is fetched when the
 Tasks tab opens, every minute while it is open, and every 10 minutes otherwise.
 
+## Google Calendar
+
+With **Google Calendar events** switched on in the settings, the calendar tab shows the events of
+your main calendar (a day with events has a dot; click a day to list them) and **+** adds one
+(title, all day or from–to). GNOME Online Accounts signs in, as for tasks; keep **Calendar** on for
+the account. Events are fetched when the tab opens, every minute while it is open and every 15
+minutes otherwise.
+
 ## Settings
 
 The gear in the open island shows the settings inside the island:
 - which sections the island has (home, media, shelf, calendar, tasks); the last one can't be switched off,
-- which displays show the island (same as the panel, all, the active one, selected ones),
 - the clock format (empty follows the COSMIC Time applet),
-- the delays before opening and closing,
-- hiding the island when a window is fullscreen on its display (on by default),
+- the delays before opening and closing, and a mode without animations,
 - what the compact island shows,
-- Google Tasks sync and lyrics.
+- which cards the home page has,
+- the clipboard history,
+- Google Tasks and Google Calendar, and lyrics.
 
 Settings are stored with cosmic-config under `io.github.jiricepelka.CosmicExtIsland`.
 
 ## Development
 
-```bash
-just run
-```
-
-`--expand[=home|media|shelf|calendar|tasks|settings]` starts the island open on that tab, which is
-handy for screenshots:
+The island runs inside the panel, so install it (`just install`) and reload the applet. For
+screenshots, `COSMIC_EXT_ISLAND_EXPAND=home|media|shelf|calendar|tasks|settings` starts it open on
+that tab, and `COSMIC_EXT_ISLAND_LYRICS=1` on the lyrics page. A D-Bus call opens and closes it:
 
 ```bash
-just run --expand=calendar
+busctl --user call io.github.jiricepelka.CosmicExtIsland /io/github/jiricepelka/CosmicExtIsland io.github.jiricepelka.CosmicExtIsland Toggle
 ```
 
 The opening animation follows [Boring Notch](https://boringnotch.com/): a spring (response 0.42 s,
