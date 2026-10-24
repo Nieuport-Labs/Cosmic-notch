@@ -4,7 +4,7 @@
 //! user's COSMIC theme; nothing here is a fixed color. Every color of the
 //! island's content goes through [`faded`], so content can fade in.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use cosmic::iced::advanced::text::{Ellipsize, EllipsizeHeightLimit, Wrapping};
 use cosmic::iced::clipboard::dnd::DndAction;
@@ -20,11 +20,19 @@ use crate::island::fade::{fade, faded};
 use crate::island::geometry;
 use crate::island::measure::measure;
 use crate::modules::clock;
+use crate::modules::lyrics;
 use crate::modules::media::{self, MediaState, Status};
 use crate::modules::shelf::{Clip, DragOut, Item};
 
 /// Width of the expanded island's content, from the design.
 pub const EXPANDED_WIDTH: f32 = 640.0;
+/// The lyrics page: size of the cover, and of the lines of the song.
+const LYRICS_COVER: f32 = 150.0;
+const LYRICS_LINE: f32 = 36.0;
+const LYRICS_ROWS: usize = 7;
+const LYRICS_HEIGHT: f32 = LYRICS_LINE * LYRICS_ROWS as f32;
+const LYRICS_SMALL: f32 = 15.0;
+const LYRICS_LARGE: f32 = 23.0;
 /// Gap between the panel's edges and the compact island.
 const COMPACT_INSET: f32 = 4.0;
 /// Size of a file's preview on the shelf; its name is no wider.
@@ -259,12 +267,28 @@ impl Island {
         let spacing = cosmic::theme::spacing();
 
         if self.lyrics_view && self.config.lyrics {
+            // The lyrics get the room: the cover and the track on the left, the
+            // song on the right, running through the middle of the page.
+            let side = widget::Column::new()
+                .push(self.cover(LYRICS_COVER, false, opacity))
+                .push(
+                    widget::text::heading(media.title.clone())
+                        .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(2)))
+                        .width(Length::Fixed(LYRICS_COVER)),
+                )
+                .push(
+                    widget::text::caption(media.artists.clone())
+                        .class(cosmic::theme::Text::Custom(secondary_text))
+                        .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1)))
+                        .width(Length::Fixed(LYRICS_COVER)),
+                )
+                .spacing(spacing.space_xxs);
             return widget::Column::new()
                 .push(
                     widget::Row::new()
-                        .push(self.cover(96.0, false, opacity))
+                        .push(side)
                         .push(self.lyrics_panel(media))
-                        .spacing(spacing.space_s),
+                        .spacing(spacing.space_m),
                 )
                 .push(self.progress(media))
                 .push(self.media_controls(media))
@@ -397,62 +421,99 @@ impl Island {
         column.into()
     }
 
-    /// Lyrics of the playing track; synced ones follow the song line by line.
+    /// Lyrics of the playing track; synced ones scroll with the song.
     fn lyrics_panel(&self, media: &MediaState) -> Element<'_, Message> {
-        use crate::modules::lyrics::{self, Lyrics};
-        let spacing = cosmic::theme::spacing();
-        const HEIGHT: f32 = 150.0;
-
+        use crate::modules::lyrics::Lyrics;
         let note = |text: String| -> Element<'_, Message> {
             container(widget::text::body(text).class(cosmic::theme::Text::Custom(secondary_text)))
                 .width(Length::Fill)
-                .height(Length::Fixed(HEIGHT))
+                .height(Length::Fixed(LYRICS_HEIGHT))
                 .align_y(Alignment::Center)
                 .into()
         };
-
-        let body: Element<'_, Message> = match self.lyrics.as_ref().and_then(|(_, l)| l.as_ref()) {
+        match self.lyrics.as_ref().and_then(|(_, l)| l.as_ref()) {
             None => note(fl!("lyrics-loading")),
             Some(Lyrics::NotFound) => note(fl!("lyrics-not-found")),
             Some(Lyrics::Instrumental) => note(fl!("lyrics-instrumental")),
-            Some(Lyrics::Plain(lines)) => widget::scrollable(
-                widget::text::body(lines.join("\n")).width(Length::Fill),
-            )
-            .height(Length::Fixed(HEIGHT))
-            .into(),
-            Some(Lyrics::Synced(lines)) => {
-                let position = media.position_at(Instant::now());
-                let current = lyrics::current_line(lines, position);
-                let first = current.unwrap_or(0).saturating_sub(1);
-                let mut column = widget::Column::new().spacing(spacing.space_xxxs);
-                for (index, (_, text)) in lines.iter().enumerate().skip(first).take(5) {
-                    let text = if text.is_empty() { "♪".to_owned() } else { text.clone() };
-                    column = column.push(if Some(index) == current {
-                        widget::text::title4(text)
-                            .wrapping(Wrapping::WordOrGlyph)
-                            .width(Length::Fill)
-                    } else {
-                        widget::text::body(text)
-                            .class(cosmic::theme::Text::Custom(secondary_text))
-                            .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1)))
-                            .width(Length::Fill)
-                    });
-                }
-                container(column)
-                    .width(Length::Fill)
-                    .height(Length::Fixed(HEIGHT))
-                    .clip(true)
-                    .into()
-            }
-        };
+            Some(Lyrics::Plain(lines)) => widget::Column::new()
+                .push(
+                    widget::scrollable(widget::text::body(lines.join("\n")).width(Length::Fill))
+                        .height(Length::Fixed(LYRICS_HEIGHT)),
+                )
+                .push(self.lyrics_source())
+                .width(Length::Fill)
+                .into(),
+            Some(Lyrics::Synced(lines)) => widget::Column::new()
+                .push(self.synced_lyrics(lines, media))
+                .push(self.lyrics_source())
+                .width(Length::Fill)
+                .into(),
+        }
+    }
 
-        widget::Column::new()
-            .push(body)
-            .push(
-                widget::text::caption(fl!("lyrics-source"))
-                    .class(cosmic::theme::Text::Custom(secondary_text)),
-            )
+    fn lyrics_source(&self) -> Element<'_, Message> {
+        widget::text::caption(fl!("lyrics-source"))
+            .class(cosmic::theme::Text::Custom(secondary_text))
+            .into()
+    }
+
+    /// The song's lines in a column that keeps the line being sung in the
+    /// middle: it grows and brightens as it arrives, the others shrink and
+    /// fade with their distance, and the column slides up when the line changes.
+    fn synced_lyrics(&self, lines: &[(Duration, String)], media: &MediaState) -> Element<'_, Message> {
+        let position = media.position_at(Instant::now());
+        let (current, progress) = lyrics::scroll_progress(lines, position);
+        // Where the middle of the view is, in lines: it moves from the previous line to the current one.
+        let middle = match current {
+            Some(k) => k as f32 - 1.0 + progress,
+            None => -1.0,
+        }
+        .max(-1.0);
+        let base = middle.floor();
+        let first = base as i64 - LYRICS_ROWS as i64 / 2;
+        let theme = cosmic::theme::active();
+        let on: Color = theme.cosmic().background(theme.transparent).on.into();
+        let mut column = widget::Column::new();
+        for row in 0..=LYRICS_ROWS as i64 {
+            let index = first + row;
+            let distance = (index as f32 - middle).abs();
+            let line = usize::try_from(index).ok().and_then(|i| lines.get(i).map(|l| (i, l)));
+            let element: Element<'_, Message> = match line {
+                Some((_, (start, text))) => {
+                    let text = if text.is_empty() { "♪" } else { text.as_str() };
+                    let emphasis = (1.0 - distance).clamp(0.0, 1.0);
+                    let size = LYRICS_SMALL + (LYRICS_LARGE - LYRICS_SMALL) * emphasis;
+                    // Long lines get a smaller size rather than a second line.
+                    let size = if text.chars().count() > 34 { size * 0.82 } else { size };
+                    let alpha = 0.32 + 0.68 * emphasis - 0.06 * (distance - 1.0).max(0.0);
+                    let label = widget::text(text.to_owned())
+                        .size(size)
+                        .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1)))
+                        .class(cosmic::theme::Text::Color(faded(Color {
+                            a: alpha.clamp(0.12, 1.0),
+                            ..on
+                        })));
+                    // A click on a line plays from there.
+                    widget::mouse_area(
+                        container(label)
+                            .width(Length::Fill)
+                            .height(Length::Fixed(LYRICS_LINE))
+                            .align_y(Alignment::Center),
+                    )
+                    .on_press(Message::SeekTo(*start))
+                    .into()
+                }
+                None => widget::Space::new()
+                    .width(Length::Fill)
+                    .height(Length::Fixed(LYRICS_LINE))
+                    .into(),
+            };
+            column = column.push(element);
+        }
+        container(fade(column, 1.0, 1.0).shifted((middle - base) * LYRICS_LINE))
             .width(Length::Fill)
+            .height(Length::Fixed(LYRICS_HEIGHT))
+            .clip(true)
             .into()
     }
 

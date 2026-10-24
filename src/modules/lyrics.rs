@@ -64,6 +64,27 @@ fn parse_time(tag: &str) -> Option<Duration> {
     (seconds >= 0.0).then(|| Duration::from_secs(minutes * 60) + Duration::from_secs_f64(seconds))
 }
 
+/// Where the lyrics view is between lines: the line being sung and how far the
+/// view has scrolled to it, 0–1, at `position`.
+pub const SCROLL: Duration = Duration::from_millis(350);
+
+pub fn scroll_progress(lines: &[(Duration, String)], position: Duration) -> (Option<usize>, f32) {
+    let current = current_line(lines, position);
+    let Some(k) = current else {
+        return (None, 1.0);
+    };
+    let since = position.saturating_sub(lines[k].0).as_secs_f32();
+    let t = (since / SCROLL.as_secs_f32()).clamp(0.0, 1.0);
+    // Smooth ease-out.
+    (current, 1.0 - (1.0 - t).powi(3))
+}
+
+/// How long until the line after the current one starts.
+pub fn until_next_line(lines: &[(Duration, String)], position: Duration) -> Option<Duration> {
+    let next = current_line(lines, position).map_or(0, |k| k + 1);
+    lines.get(next).map(|(start, _)| start.saturating_sub(position))
+}
+
 /// Index of the line being sung at `position`, if one has started.
 pub fn current_line(lines: &[(Duration, String)], position: Duration) -> Option<usize> {
     lines.iter().rposition(|(start, _)| *start <= position)
@@ -209,6 +230,27 @@ mod tests {
         let lines = parse_lrc("[00:10.00][00:30.00]Chorus");
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[1].0, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn scrolls_to_a_new_line_then_rests() {
+        let lines = parse_lrc("[00:10.00]a\n[00:20.00]b");
+        let at = |ms| scroll_progress(&lines, Duration::from_millis(ms));
+        assert_eq!(at(5_000), (None, 1.0));
+        assert_eq!(at(20_000), (Some(1), 0.0));
+        let (line, mid) = at(20_150);
+        assert_eq!(line, Some(1));
+        assert!(mid > 0.3 && mid < 1.0, "{mid}");
+        assert_eq!(at(21_000), (Some(1), 1.0));
+    }
+
+    #[test]
+    fn waits_for_the_next_line() {
+        let lines = parse_lrc("[00:10.00]a\n[00:20.00]b");
+        let wait = |ms| until_next_line(&lines, Duration::from_millis(ms));
+        assert_eq!(wait(2_000), Some(Duration::from_secs(8)));
+        assert_eq!(wait(12_000), Some(Duration::from_secs(8)));
+        assert_eq!(wait(25_000), None);
     }
 
     #[test]

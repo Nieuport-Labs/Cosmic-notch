@@ -235,6 +235,8 @@ pub enum Message {
     Art(String, Option<std::path::PathBuf>),
     Seek(f32),
     SeekReleased,
+    /// A line of the lyrics was clicked: play from there.
+    SeekTo(Duration),
     AudioLevels(crate::modules::audio::Levels),
     Thumbnail(String, Option<std::path::PathBuf>),
     CalendarShift(i32),
@@ -553,6 +555,19 @@ impl cosmic::Application for Island {
             }
             Message::Seek(seconds) => {
                 self.seeking = Some(seconds);
+            }
+            Message::SeekTo(position) => {
+                if let Some(state) = &mut self.media {
+                    state.position = position;
+                    state.position_at = Instant::now();
+                    let (player, track_id) = (state.player.clone(), state.track_id.clone());
+                    return cosmic::iced::Task::<()>::future(media::command(
+                        player,
+                        track_id,
+                        media::Command::SetPosition(position),
+                    ))
+                    .discard();
+                }
             }
             Message::SeekReleased => {
                 if let Some(seconds) = self.seeking.take()
@@ -1000,19 +1015,26 @@ impl cosmic::Application for Island {
             .media
             .as_ref()
             .is_some_and(|m| m.status == media::Status::Playing);
-        // Synced lyrics move on several times a second.
-        let synced_lyrics = matches!(
-            self.lyrics.as_ref().and_then(|(_, l)| l.as_ref()),
-            Some(lyrics::Lyrics::Synced(_))
-        );
+        // Synced lyrics change line now and then: wake up for each, and draw
+        // frames only while the view scrolls to the new line.
         if playing
-            && synced_lyrics
             && self.config.lyrics
             && self.tab == Tab::Media
             && self.state.expanded
+            && let (Some(media), Some((_, Some(lyrics::Lyrics::Synced(lines))))) =
+                (&self.media, &self.lyrics)
         {
-            subscriptions
-                .push(cosmic::iced::time::every(Duration::from_millis(250)).map(|_| Message::Tick));
+            let position = media.position_at(Instant::now());
+            let (current, progress) = lyrics::scroll_progress(lines, position);
+            if progress < 1.0 && !geometry::reduced_motion() {
+                subscriptions.push(window::frames().map(|(_, at)| Message::Frame(at)));
+            }
+            if let Some(wait) = lyrics::until_next_line(lines, position) {
+                subscriptions.push(
+                    Subscription::run_with(NextLine { current, wait }, next_line)
+                        .map(|()| Message::Tick),
+                );
+            }
         }
         if playing && self.bars_enabled() {
             subscriptions
@@ -1393,6 +1415,27 @@ impl Island {
             tracing::warn!("failed to save the shelves: {err}");
         }
     }
+}
+
+/// Wakes up when the next line of the lyrics starts. Identified by the line
+/// being sung, so it is set anew whenever that changes.
+struct NextLine {
+    current: Option<usize>,
+    wait: Duration,
+}
+
+impl std::hash::Hash for NextLine {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.current.hash(state);
+    }
+}
+
+fn next_line(next: &NextLine) -> impl cosmic::iced::futures::Stream<Item = ()> + use<> {
+    // A moment late, so the line has started when we look.
+    let wait = next.wait + Duration::from_millis(30);
+    cosmic::iced::futures::stream::once(async move {
+        tokio::time::sleep(wait).await;
+    })
 }
 
 fn detect_share_targets() -> Task<Message> {

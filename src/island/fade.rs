@@ -37,6 +37,18 @@ pub struct Fade<'a, Message> {
     content: Element<'a, Message>,
     opacity: f32,
     scale: f32,
+    /// How far up the content is drawn, in logical pixels. Layout and input
+    /// are unaffected, so it is for brief movements.
+    shift: f32,
+}
+
+impl<Message> Fade<'_, Message> {
+    /// Draws the content `dy` pixels higher than it is laid out.
+    #[must_use]
+    pub fn shifted(mut self, dy: f32) -> Self {
+        self.shift = dy;
+        self
+    }
 }
 
 /// Draws `content` at `opacity`, scaled by `scale` around its top center.
@@ -49,6 +61,7 @@ pub fn fade<'a, Message>(
         content: content.into(),
         opacity: opacity.clamp(0.0, 1.0),
         scale,
+        shift: 0.0,
     }
 }
 
@@ -119,11 +132,12 @@ impl<Message> Widget<Message, cosmic::Theme, cosmic::Renderer> for Fade<'_, Mess
                 viewport,
             );
         };
-        if (self.scale - 1.0).abs() < 0.001 {
+        if (self.scale - 1.0).abs() < 0.001 && self.shift.abs() < 0.01 {
             draw(renderer);
         } else {
             let anchor = Vector::new(bounds.x + bounds.width / 2.0, bounds.y);
-            let transformation = Transformation::translate(anchor.x, anchor.y)
+            let transformation = Transformation::translate(0.0, -self.shift)
+                * Transformation::translate(anchor.x, anchor.y)
                 * Transformation::scale(self.scale)
                 * Transformation::translate(-anchor.x, -anchor.y);
             renderer.with_layer(*viewport, |renderer| {
