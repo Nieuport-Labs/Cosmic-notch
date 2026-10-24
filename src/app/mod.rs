@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! The island daemon: one overlay layer surface per output, drawn over the top panel.
+//! The island, as a panel applet: the compact island is the applet itself, so the
+//! panel places it among the other applets; the expanded island is a popup that
+//! grows out of it.
 
 mod home;
 mod settings;
@@ -13,29 +15,27 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local, Locale};
 use cosmic::app::{Core, Task};
-use cosmic::cctk::sctk::reexports::client::protocol::wl_output::WlOutput;
-use cosmic::cctk::sctk::shell::wlr_layer::{Anchor, KeyboardInteractivity, Layer};
+use cosmic::applet::cosmic_panel_config::PanelAnchor;
 use cosmic::cosmic_config;
 use cosmic::iced::event::{PlatformSpecific, wayland};
 use cosmic::iced::keyboard::{self, key::Named};
-use cosmic::iced::platform_specific::runtime::wayland::layer_surface::{
-    IcedMargin, IcedOutput, SctkLayerSurfaceSettings,
-};
+use cosmic::iced::platform_specific::runtime::wayland::popup::{SctkPopupSettings, SctkPositioner};
 use cosmic::iced::platform_specific::shell::commands::{
-    blur::blur, layer_surface::set_keyboard_interactivity,
+    blur::blur,
+    popup::{destroy_popup, get_popup, set_size},
 };
-use cosmic::iced::{Color, Size, Subscription, window};
-use cosmic::surface::action::{app_layer_shell, destroy_layer_shell};
+use cosmic::iced::{Color, Rectangle, Size, Subscription, window};
+use cosmic::cctk::sctk::reexports::protocols::xdg::shell::client::xdg_positioner::{Anchor, Gravity};
 use cosmic::Element;
 
-use crate::config::{self, APP_ID, IslandConfig, Outputs, TimeAppletConfig};
+use crate::applet::APPLET_ID;
+use crate::config::{self, APP_ID, IslandConfig, TimeAppletConfig};
 use crate::island::geometry::{self, SizeAnimation};
 use crate::modules::clock;
 use crate::modules::google_tasks::Change;
 use crate::modules::lyrics;
 use crate::modules::media::{self, MediaState};
 use crate::modules::shelf::{self, Clip, ShareTarget, UriList};
-use crate::panel::{PANEL_CONFIG_ID, PanelGeometry, PanelKeys};
 
 /// Options for development and screenshots.
 #[derive(Debug, Clone, Default)]
@@ -46,11 +46,7 @@ pub struct Flags {
 
 pub fn run(flags: Flags) -> cosmic::iced::Result {
     crate::i18n::init();
-    let settings = cosmic::app::Settings::default()
-        .no_main_window(true)
-        .transparent(true)
-        .exit_on_close(false);
-    cosmic::app::run::<Island>(settings, flags)
+    cosmic::applet::run::<Island>(flags)
 }
 
 impl Tab {
@@ -81,15 +77,9 @@ pub enum Tab {
     Settings,
 }
 
-struct OutputEntry {
-    output: WlOutput,
-    name: Option<String>,
-    surface: Option<window::Id>,
-}
-
 struct SurfaceState {
     anim: SizeAnimation,
-    /// Size whose input zone and blur region the compositor has.
+    /// Size whose blur region the compositor has.
     synced: Option<Size>,
     expanded: bool,
     /// Expanded by a click: stays open when the pointer leaves.
@@ -105,6 +95,8 @@ struct SurfaceState {
     measured: Size,
     /// When something was dropped on the island, for its flash.
     dropped_at: Option<Instant>,
+    /// Size of the island when it was last open, which it grows to at once on opening.
+    last_expanded: Size,
 }
 
 /// How much the island swells while a file is held over it.
@@ -148,11 +140,17 @@ pub struct Island {
     config: IslandConfig,
     config_handle: Option<cosmic_config::Config>,
     time_config: TimeAppletConfig,
-    panel: PanelGeometry,
     locale: Locale,
     now: DateTime<Local>,
-    outputs: Vec<OutputEntry>,
-    surfaces: HashMap<window::Id, SurfaceState>,
+    /// The applet's window, which messages of the island refer to.
+    id: window::Id,
+    state: SurfaceState,
+    /// The popup showing the expanded island, while it is open or closing.
+    popup: Option<window::Id>,
+    /// Size of the popup's surface; its input region is the whole of it.
+    popup_size: Size,
+    /// Size of the compact island in the panel.
+    compact_size: Size,
     tab: Tab,
     start_expanded: bool,
     media: Option<MediaState>,
@@ -168,10 +166,6 @@ pub struct Island {
     share_targets: Vec<ShareTarget>,
     /// Where the shelf is kept across restarts.
     state_handle: Option<cosmic_config::Config>,
-    /// Session bus connection serving the daemon's interface.
-    dbus: Option<zbus::Connection>,
-    /// Width of the compact island, published for the panel applet.
-    compact_width: u32,
     /// Levels of the bars next to the playing track.
     bar_levels: crate::modules::audio::Levels,
     /// Thumbnails of shelf files by URI; `None` while loading or when there is none.
@@ -214,8 +208,13 @@ pub enum Message {
     PillPressed(window::Id),
     Escape,
     SelectTab(Tab),
-    OutputAdded(WlOutput, Option<String>),
-    OutputRemoved(WlOutput),
+    /// The compact island in the panel changed size.
+    CompactMeasured(Size),
+    CompactEntered,
+    CompactLeft,
+    CompactPressed,
+    /// The compositor closed the popup.
+    PopupClosed(window::Id),
     Config(IslandConfig),
     TimeConfig(TimeAppletConfig),
     Settings(settings::Message),
@@ -256,7 +255,6 @@ pub enum Message {
     SendUpdate(String, crate::modules::localsend::SendEvent),
     ToggleLyrics,
     LyricsLoaded(lyrics::Track, lyrics::Lyrics),
-    PanelConfig(PanelKeys),
     Ipc(crate::ipc::Event),
     TodoInput(String),
     TodoAdd,
@@ -278,7 +276,7 @@ impl cosmic::Application for Island {
     type Executor = cosmic::executor::Default;
     type Flags = Flags;
     type Message = Message;
-    const APP_ID: &'static str = APP_ID;
+    const APP_ID: &'static str = APPLET_ID;
 
     fn core(&self) -> &Core {
         &self.core
@@ -288,23 +286,34 @@ impl cosmic::Application for Island {
         &mut self.core
     }
 
-    fn init(mut core: Core, flags: Flags) -> (Self, Task<Message>) {
-        core.set_app_type(cosmic::core::AppType::System);
-        // The island manages its own blur region and corners; whole-surface
-        // defaults would blur the transparent area around the pill.
-        core.set_auto_blur(cosmic::core::Auto::Window.into());
-        core.set_auto_corner_radius(cosmic::core::Auto::Window.into());
-
+    fn init(core: Core, flags: Flags) -> (Self, Task<Message>) {
+        let id = core.main_window_id().unwrap_or_else(window::Id::unique);
+        let (_, thickness) = applet_thickness(&core);
+        let compact = Size::new(thickness as f32 * 3.0, thickness as f32);
         let island = Self {
             core,
             config: config::load(APP_ID, config::CONFIG_VERSION),
             config_handle: cosmic_config::Config::new(APP_ID, config::CONFIG_VERSION).ok(),
             time_config: config::load(config::TIME_APPLET_ID, 1),
-            panel: PanelGeometry::load(),
             locale: clock::system_locale(),
             now: Local::now(),
-            outputs: Vec::new(),
-            surfaces: HashMap::new(),
+            id,
+            state: SurfaceState {
+                anim: SizeAnimation::settled(compact),
+                synced: None,
+                expanded: false,
+                pinned: false,
+                hovered: false,
+                hover_generation: 0,
+                content_since: Instant::now(),
+                drag_over: false,
+                measured: compact,
+                dropped_at: None,
+                last_expanded: Size::new(view::EXPANDED_WIDTH + 24.0, 300.0),
+            },
+            popup: None,
+            popup_size: Size::ZERO,
+            compact_size: compact,
             tab: flags.expand.unwrap_or_default(),
             start_expanded: flags.expand.is_some(),
             media: None,
@@ -315,8 +324,6 @@ impl cosmic::Application for Island {
             renaming: None,
             share_targets: Vec::new(),
             state_handle: cosmic_config::Config::new_state(APP_ID, config::CONFIG_VERSION).ok(),
-            dbus: None,
-            compact_width: 0,
             bar_levels: [0.0; crate::modules::audio::BANDS],
             thumbnails: HashMap::new(),
             landed: HashMap::new(),
@@ -356,73 +363,97 @@ impl cosmic::Application for Island {
             Message::SyncSurfaces => {
                 return self.sync_surfaces(Instant::now());
             }
-            Message::Measured(id, size) => {
+            Message::CompactMeasured(size) => {
+                if size != self.compact_size {
+                    self.compact_size = size;
+                    if !self.state.expanded && self.popup.is_none() {
+                        self.state.measured = size;
+                        self.state.anim = SizeAnimation::settled(size);
+                    }
+                }
+                if std::mem::take(&mut self.start_expanded) {
+                    self.state.pinned = true;
+                    return self.set_expanded(self.id, true);
+                }
+            }
+            Message::CompactEntered => {
+                if !self.state.expanded {
+                    return self.update(Message::PointerEntered(self.id));
+                }
+            }
+            Message::CompactLeft => {
+                if !self.state.expanded {
+                    return self.update(Message::PointerLeft(self.id));
+                }
+            }
+            Message::CompactPressed => {
+                if !self.state.expanded {
+                    return self.update(Message::PillPressed(self.id));
+                }
+            }
+            Message::PopupClosed(popup) => {
+                if self.popup == Some(popup) {
+                    self.popup = None;
+                    self.state.pinned = false;
+                    self.state.expanded = false;
+                    self.state.anim = SizeAnimation::settled(self.compact_size);
+                    self.state.measured = self.compact_size;
+                    self.share_page = false;
+                }
+            }
+            Message::Measured(_, size) => {
                 tracing::debug!("island content measures {size:?}");
-                if let Some(state) = self.surfaces.get_mut(&id) {
-                    state.measured = size;
-                    state.anim.go(state.target(), Instant::now());
-                    let mut tasks = vec![self.sync_surfaces(Instant::now())];
-                    if !self.surfaces[&id].expanded {
-                        tasks.push(self.publish_compact_width(size.width));
-                    }
-                    return Task::batch(tasks);
+                if self.state.expanded {
+                    self.state.last_expanded = size;
+                    self.state.measured = size;
+                    self.state.anim.go(self.state.target(), Instant::now());
+                    return Task::batch([
+                        self.resize_popup(),
+                        self.sync_surfaces(Instant::now()),
+                    ]);
                 }
             }
-            Message::PointerEntered(id) => {
-                tracing::debug!("pointer entered {id:?}");
+            Message::PointerEntered(_) => {
                 let delay = Duration::from_millis(self.config.hover_delay_ms);
-                if let Some(state) = self.surfaces.get_mut(&id) {
-                    state.hovered = true;
-                    state.hover_generation += 1;
-                    if !state.expanded {
-                        return delayed(delay, Message::HoverElapsed(id, state.hover_generation));
-                    }
+                let state = &mut self.state;
+                state.hovered = true;
+                state.hover_generation += 1;
+                if !state.expanded {
+                    return delayed(delay, Message::HoverElapsed(self.id, state.hover_generation));
                 }
             }
-            Message::PointerLeft(id) => {
-                tracing::debug!("pointer left {id:?}");
+            Message::PointerLeft(_) => {
                 let delay = Duration::from_millis(self.config.collapse_delay_ms);
-                if let Some(state) = self.surfaces.get_mut(&id) {
-                    state.hovered = false;
-                    state.hover_generation += 1;
-                    if state.expanded && !state.pinned {
-                        return delayed(delay, Message::HoverElapsed(id, state.hover_generation));
-                    }
+                let state = &mut self.state;
+                state.hovered = false;
+                state.hover_generation += 1;
+                if state.expanded && !state.pinned {
+                    return delayed(delay, Message::HoverElapsed(self.id, state.hover_generation));
                 }
             }
             Message::HoverElapsed(id, generation) => {
-                if let Some(state) = self.surfaces.get(&id)
-                    && state.hover_generation == generation
-                    && !state.pinned
-                {
-                    return self.set_expanded(id, state.hovered);
+                if self.state.hover_generation == generation && !self.state.pinned {
+                    return self.set_expanded(id, self.state.hovered);
                 }
             }
             Message::PillPressed(id) => {
-                if let Some(state) = self.surfaces.get_mut(&id) {
-                    if state.expanded && !state.pinned {
-                        // Opened by hovering: a click keeps it open.
-                        state.pinned = true;
-                    } else {
-                        let expand = !state.expanded;
-                        state.pinned = expand;
-                        return self.set_expanded(id, expand);
-                    }
+                let state = &mut self.state;
+                if state.expanded && !state.pinned {
+                    // Opened by hovering: a click keeps it open, and the popup
+                    // grabs the keyboard, which it needs for typing.
+                    state.pinned = true;
+                    return self.regrab_popup();
+                } else {
+                    let expand = !state.expanded;
+                    state.pinned = expand;
+                    return self.set_expanded(id, expand);
                 }
             }
             Message::Escape => {
-                let ids: Vec<_> = self
-                    .surfaces
-                    .iter()
-                    .filter(|(_, s)| s.expanded)
-                    .map(|(id, _)| *id)
-                    .collect();
-                return Task::batch(ids.into_iter().map(|id| {
-                    if let Some(state) = self.surfaces.get_mut(&id) {
-                        state.pinned = false;
-                    }
-                    self.set_expanded(id, false)
-                }));
+                if self.state.expanded {
+                    self.state.pinned = false;
+                    return self.set_expanded(self.id, false);
+                }
             }
             Message::SelectTab(tab) => {
                 if !self.shows(tab) {
@@ -440,38 +471,10 @@ impl cosmic::Application for Island {
                     _ => {}
                 }
             }
-            Message::OutputAdded(output, name) => {
-                self.outputs.retain(|o| o.output != output);
-                self.outputs.push(OutputEntry {
-                    output,
-                    name,
-                    surface: None,
-                });
-                return self.reconcile_surfaces();
-            }
-            Message::OutputRemoved(output) => {
-                let mut surfaces = Vec::new();
-                self.outputs.retain(|o| {
-                    if o.output != output {
-                        return true;
-                    }
-                    surfaces.extend(o.surface);
-                    false
-                });
-                return Task::batch(surfaces.into_iter().map(|id| self.destroy_surface(id)));
-            }
             Message::Config(config) => {
-                let outputs_changed = config.outputs != self.config.outputs;
-                let layer_changed = config.hide_in_fullscreen != self.config.hide_in_fullscreen;
                 self.config = config;
                 if !self.shows(self.tab) {
                     self.tab = self.first_tab();
-                }
-                if layer_changed {
-                    return self.recreate_surfaces();
-                }
-                if outputs_changed {
-                    return self.reconcile_surfaces();
                 }
             }
             Message::TimeConfig(config) => {
@@ -557,33 +560,29 @@ impl cosmic::Application for Island {
                 self.tab = Tab::Shelf;
                 self.share_page = false;
                 let task = self.set_expanded(id, true);
-                if let Some(state) = self.surfaces.get_mut(&id) {
-                    state.drag_over = true;
-                    state.hovered = true;
-                    state.hover_generation += 1;
-                    state.anim.go(state.target(), Instant::now());
-                }
+                let state = &mut self.state;
+                state.drag_over = true;
+                state.hovered = true;
+                state.hover_generation += 1;
+                state.anim.go(state.target(), Instant::now());
                 return task;
             }
             Message::DragLeft(id) => {
-                if let Some(state) = self.surfaces.get_mut(&id) {
-                    state.drag_over = false;
-                    state.anim.go(state.target(), Instant::now());
-                }
+                self.state.drag_over = false;
+                self.state.anim.go(self.state.target(), Instant::now());
                 return self.update(Message::PointerLeft(id));
             }
-            Message::Dropped(id, clip) => {
+            Message::Dropped(_, clip) => {
                 let now = Instant::now();
-                if let Some(state) = self.surfaces.get_mut(&id) {
-                    // The island swallows the file: a short dip back to its size.
-                    state.drag_over = false;
-                    state.dropped_at = clip.is_some().then_some(now);
-                    state.anim.bounce(state.target(), DROP_PUSH, now);
-                }
+                let state = &mut self.state;
+                // The island swallows the file: a short dip back to its size.
+                state.drag_over = false;
+                state.dropped_at = clip.is_some().then_some(now);
+                state.anim.bounce(state.target(), DROP_PUSH, now);
                 return self.add_clip(clip);
             }
             Message::Paste => {
-                if !self.surfaces.values().any(|s| s.expanded) {
+                if !self.state.expanded {
                     return Task::none();
                 }
                 self.tab = Tab::Shelf;
@@ -748,32 +747,13 @@ impl cosmic::Application for Island {
             Message::ShareTargets(targets) => {
                 self.share_targets = targets;
             }
-            Message::PanelConfig(keys) => {
-                let panel = PanelGeometry::from_keys(&keys);
-                if panel != self.panel {
-                    self.panel = panel;
-                    return self.recreate_surfaces();
-                }
-            }
-            Message::Ipc(crate::ipc::Event::Ready(connection)) => {
-                self.dbus = Some(connection);
-                return self.publish_compact_width(self.compact_width as f32);
-            }
-            Message::Ipc(crate::ipc::Event::AlreadyRunning) => {
-                tracing::info!("the island already runs; exiting");
-                std::process::exit(0);
-            }
             Message::Ipc(crate::ipc::Event::Toggle) => {
                 tracing::debug!("toggle requested over D-Bus");
-                let expand = !self.surfaces.values().any(|s| s.expanded);
-                let ids: Vec<_> = self.surfaces.keys().copied().collect();
-                return Task::batch(ids.into_iter().map(|id| {
-                    if let Some(state) = self.surfaces.get_mut(&id) {
-                        state.pinned = expand;
-                    }
-                    self.set_expanded(id, expand)
-                }));
+                let expand = !self.state.expanded;
+                self.state.pinned = expand;
+                return self.set_expanded(self.id, expand);
             }
+            Message::Ipc(crate::ipc::Event::Ready | crate::ipc::Event::AlreadyRunning) => {}
             Message::TodoInput(text) => {
                 self.todo_input = text;
             }
@@ -871,15 +851,13 @@ impl cosmic::Application for Island {
     ) -> Task<Message> {
         // libcosmic drops tasks returned from here for system themes; mark the
         // surfaces dirty and let the sync subscription resend their regions.
-        for state in self.surfaces.values_mut() {
-            state.synced = None;
-        }
+        self.state.synced = None;
         Task::none()
     }
 
     fn subscription(&self) -> Subscription<Message> {
         self.publish_visibility();
-        let expanded = self.surfaces.values().any(|s| s.expanded);
+        let expanded = self.state.expanded;
         // Every message redraws the island, so the clock ticks only as often as it changes.
         let tick = if expanded || clock::shows_seconds(&self.clock_format()) {
             Duration::from_secs(1)
@@ -890,14 +868,8 @@ impl cosmic::Application for Island {
             Subscription::run_with(tick, clock::ticks).map(|()| Message::Tick),
             cosmic::iced::event::listen_with(|event, status, _| match event {
                 cosmic::iced::Event::PlatformSpecific(PlatformSpecific::Wayland(
-                    wayland::Event::Output(event, output),
-                )) => match event {
-                    wayland::OutputEvent::Created(info) => {
-                        Some(Message::OutputAdded(output, info.and_then(|i| i.name)))
-                    }
-                    wayland::OutputEvent::Removed => Some(Message::OutputRemoved(output)),
-                    wayland::OutputEvent::InfoUpdate(_) => None,
-                },
+                    wayland::Event::Popup(wayland::PopupEvent::Done, _, id),
+                )) => Some(Message::PopupClosed(id)),
                 cosmic::iced::Event::PlatformSpecific(PlatformSpecific::Wayland(
                     wayland::Event::BlurEnabled,
                 )) => Some(Message::SyncSurfaces),
@@ -920,9 +892,6 @@ impl cosmic::Application for Island {
             Subscription::run(media::watch).map(Message::Media),
             Subscription::run(crate::ipc::serve).map(Message::Ipc),
             self.core
-                .watch_config::<PanelKeys>(PANEL_CONFIG_ID)
-                .map(|update| Message::PanelConfig(update.config)),
-            self.core
                 .watch_config::<IslandConfig>(APP_ID)
                 .map(|update| Message::Config(update.config)),
             self.core
@@ -931,22 +900,21 @@ impl cosmic::Application for Island {
         ];
 
         let now = Instant::now();
-        let receiving = self.surfaces.values().any(|s| s.drag_over);
+        let receiving = self.state.drag_over;
         let landing = self
             .landed
             .values()
             .any(|at| !geometry::content_transition_done(*at, now));
         if receiving
             || landing
-            || self.surfaces.values().any(|s| s.glow(now) > 0.0)
+            || self.state.glow(now) > 0.0
             || self
                 .ticked
                 .values()
                 .any(|at| now.duration_since(*at) < todo::TICK_ANIMATION)
-            || self.surfaces.values().any(|s| {
-                s.anim.is_animating(now)
-                    || !geometry::content_transition_done(s.content_since, now)
-            })
+            || self.state.anim.is_animating(now)
+            || !geometry::content_transition_done(self.state.content_since, now)
+            || (self.popup.is_some() && !self.state.expanded)
         {
             subscriptions.push(window::frames().map(|(_, at)| Message::Frame(at)));
         }
@@ -958,7 +926,7 @@ impl cosmic::Application for Island {
         }
         let sharing = self.share_page
             && self.tab == Tab::Shelf
-            && self.surfaces.values().any(|s| s.expanded);
+            && self.state.expanded;
         if sharing {
             subscriptions.push(
                 Subscription::run(crate::modules::localsend::discover).map(Message::DeviceFound),
@@ -977,16 +945,16 @@ impl cosmic::Application for Island {
             && synced_lyrics
             && self.config.lyrics
             && self.tab == Tab::Media
-            && self.surfaces.values().any(|s| s.expanded)
+            && self.state.expanded
         {
             subscriptions
                 .push(cosmic::iced::time::every(Duration::from_millis(250)).map(|_| Message::Tick));
         }
-        if playing && self.config.show_bars && !self.surfaces.is_empty() {
+        if playing && self.config.show_bars {
             subscriptions
                 .push(Subscription::run(crate::modules::audio::levels).map(Message::AudioLevels));
         }
-        if self.surfaces.values().any(|s| s.synced.is_none()) {
+        if self.popup.is_some() && self.state.synced.is_none() {
             subscriptions.push(
                 cosmic::iced::time::every(Duration::from_millis(100))
                     .map(|_| Message::SyncSurfaces),
@@ -997,11 +965,15 @@ impl cosmic::Application for Island {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        unreachable!("the island has no main window")
+        self.applet_view()
     }
 
     fn view_window(&self, id: window::Id) -> Element<'_, Message> {
-        self.island_view(id)
+        if self.popup == Some(id) {
+            self.island_view(self.id)
+        } else {
+            self.applet_view()
+        }
     }
 
     fn style(&self) -> Option<cosmic::iced::theme::Style> {
@@ -1056,186 +1028,165 @@ impl Island {
         let lyrics_page = self.lyrics_view && self.config.lyrics;
         let bars_shown = playing
             && self.config.show_bars
-            && self.surfaces.values().any(|s| {
-                !s.expanded
-                    || self.tab == Tab::Home
-                    || (self.tab == Tab::Media && !lyrics_page)
-            });
+            && (!self.state.expanded
+                || self.tab == Tab::Home
+                || (self.tab == Tab::Media && !lyrics_page));
         crate::modules::audio::set_shown(bars_shown);
         crate::modules::system::set_detailed(
-            self.tab == Tab::Home && self.surfaces.values().any(|s| s.expanded),
+            self.tab == Tab::Home && self.state.expanded,
         );
     }
 
-    fn set_expanded(&mut self, id: window::Id, expanded: bool) -> Task<Message> {
-        let Some(state) = self.surfaces.get_mut(&id) else {
-            return Task::none();
-        };
+    fn set_expanded(&mut self, _id: window::Id, expanded: bool) -> Task<Message> {
+        let now = Instant::now();
+        let state = &mut self.state;
         if state.expanded == expanded {
             return Task::none();
         }
         state.expanded = expanded;
-        state.content_since = Instant::now();
+        state.content_since = now;
         if !expanded {
             state.pinned = false;
             self.share_page = false;
             // Reopen on the current month.
             self.calendar_month = crate::modules::calendar::shift_month(self.now.date_naive(), 0);
+            // Shrink back into the applet; the popup goes when it has.
+            state.measured = self.compact_size;
+            state.anim.go(self.compact_size, now);
+            return Task::none();
         }
-        // Keyboard focus only while open, so Esc works without stealing focus otherwise.
-        set_keyboard_interactivity(
-            id,
-            if expanded {
-                KeyboardInteractivity::OnDemand
-            } else {
-                KeyboardInteractivity::None
-            },
+        // Grow out of the applet.
+        state.anim = SizeAnimation::settled(self.compact_size);
+        state.synced = None;
+        if self.popup.is_some() {
+            // Still closing: grow from where it is.
+            state.measured = state.last_expanded;
+            state.anim.go(state.target(), now);
+            return Task::none();
+        }
+        state.measured = state.last_expanded;
+        state.anim.go(state.target(), now);
+        self.open_popup()
+    }
+
+    /// The panel edge the island hangs from.
+    fn anchor(&self) -> PanelAnchor {
+        self.core.applet.anchor
+    }
+
+    /// Size the popup needs for the island at its target size, with room for the spring's overshoot.
+    fn popup_wanted(&self) -> Size {
+        const ROOM: f32 = 16.0;
+        let target = self.state.anim.target();
+        Size::new(
+            (target.width + ROOM).min(geometry::MAX.width).ceil(),
+            (target.height + ROOM).min(geometry::MAX.height).ceil(),
         )
     }
 
-    fn wants_output(&self, entry: &OutputEntry) -> bool {
-        use cosmic::applet::cosmic_panel_config::CosmicPanelOuput;
-        let named = |names: &[String]| {
-            entry
-                .name
-                .as_ref()
-                .is_some_and(|n| names.iter().any(|m| m == n))
+    fn open_popup(&mut self) -> Task<Message> {
+        let id = window::Id::unique();
+        self.popup = Some(id);
+        self.popup_size = self.popup_wanted();
+        let (anchor, gravity) = match self.anchor() {
+            PanelAnchor::Top => (Anchor::Top, Gravity::Bottom),
+            PanelAnchor::Bottom => (Anchor::Bottom, Gravity::Top),
+            PanelAnchor::Left => (Anchor::Left, Gravity::Right),
+            PanelAnchor::Right => (Anchor::Right, Gravity::Left),
         };
-        let first = || self.outputs.first().is_some_and(|o| o.output == entry.output);
-        match &self.config.outputs {
-            Outputs::All => true,
-            // The active output gets a single surface placed by the compositor.
-            Outputs::Active => first(),
-            Outputs::Named(names) => named(names),
-            Outputs::FollowPanel => match &self.panel.output {
-                CosmicPanelOuput::All => true,
-                CosmicPanelOuput::Active => first(),
-                CosmicPanelOuput::Name(name) => named(std::slice::from_ref(name)),
-            },
-        }
-    }
-
-    fn active_output_only(&self) -> bool {
-        use cosmic::applet::cosmic_panel_config::CosmicPanelOuput;
-        match self.config.outputs {
-            Outputs::Active => true,
-            Outputs::FollowPanel => matches!(self.panel.output, CosmicPanelOuput::Active),
-            _ => false,
-        }
-    }
-
-    /// Layer and placement are fixed when a layer surface is created: makes them anew.
-    fn recreate_surfaces(&mut self) -> Task<Message> {
-        let ids: Vec<_> = self.outputs.iter_mut().filter_map(|o| o.surface.take()).collect();
-        let destroy = Task::batch(ids.into_iter().map(|id| self.destroy_surface(id)));
-        destroy.chain(self.reconcile_surfaces())
-    }
-
-    /// Creates and destroys surfaces so that exactly the wanted outputs have one.
-    fn reconcile_surfaces(&mut self) -> Task<Message> {
-        let active_only = self.active_output_only();
-        let wanted: Vec<bool> = self.outputs.iter().map(|o| self.wants_output(o)).collect();
-        let mut tasks = Vec::new();
-        for (i, wanted) in wanted.into_iter().enumerate() {
-            match (wanted, self.outputs[i].surface) {
-                (true, None) => {
-                    let id = window::Id::unique();
-                    let output = if active_only {
-                        IcedOutput::Active
-                    } else {
-                        IcedOutput::Output(self.outputs[i].output.clone())
-                    };
-                    self.outputs[i].surface = Some(id);
-                    tasks.push(self.create_surface(id, output));
-                }
-                (false, Some(id)) => {
-                    self.outputs[i].surface = None;
-                    tasks.push(self.destroy_surface(id));
-                }
-                _ => {}
-            }
-        }
-        Task::batch(tasks)
-    }
-
-    fn create_surface(&mut self, id: window::Id, output: IcedOutput) -> Task<Message> {
-        let height = self.panel.compact_height as f32;
-        self.surfaces.insert(
+        let (_, thickness) = applet_thickness(&self.core);
+        get_popup(SctkPopupSettings {
+            parent: self.id,
             id,
-            SurfaceState {
-                anim: SizeAnimation::settled(Size::new(height * 3.0, height)),
-                synced: None,
-                expanded: self.start_expanded,
-                pinned: self.start_expanded,
-                hovered: false,
-                hover_generation: 0,
-                content_since: Instant::now(),
-                drag_over: false,
-                measured: Size::new(height * 3.0, height),
-                dropped_at: None,
-            },
-        );
-        let top = self.panel.top as i32;
-        // On the top layer, like the panel, the compositor hides the island behind a
-        // focused fullscreen window; it is mapped after the panel, so it stays above it.
-        let layer = if self.config.hide_in_fullscreen {
-            Layer::Top
-        } else {
-            Layer::Overlay
-        };
-        cosmic::task::message(cosmic::Action::Cosmic(cosmic::app::Action::Surface(
-            app_layer_shell::<Island>(
-                |_| cosmic::surface::action::LiveSettings::default(),
-                move |_| SctkLayerSurfaceSettings {
-                    id,
-                    layer,
-                    keyboard_interactivity: KeyboardInteractivity::None,
-                    input_zone: Some(Vec::new()),
-                    anchor: Anchor::TOP,
-                    output: output.clone(),
-                    namespace: "cosmic-ext-island".into(),
-                    margin: IcedMargin {
-                        top,
-                        ..Default::default()
+            positioner: SctkPositioner {
+                size: Some((self.popup_size.width as u32, self.popup_size.height as u32)),
+                size_limits: cosmic::iced::Limits::NONE
+                    .min_width(1.0)
+                    .min_height(1.0)
+                    .max_width(geometry::MAX.width)
+                    .max_height(geometry::MAX.height),
+                anchor_rect: Rectangle {
+                    x: 0,
+                    y: 0,
+                    width: self.compact_size.width.round() as i32,
+                    height: if self.core.applet.is_horizontal() {
+                        thickness as i32
+                    } else {
+                        self.compact_size.height.round() as i32
                     },
-                    size: Some((
-                        Some(geometry::SURFACE.width as u32),
-                        Some(geometry::SURFACE.height as u32),
-                    )),
-                    // Ignore the panel's exclusive zone, so the island sits over the panel.
-                    exclusive_zone: -1,
-                    ..Default::default()
                 },
-                None,
-            ),
-        )))
+                anchor,
+                gravity,
+                // Slide along the panel to stay on the screen.
+                constraint_adjustment: 3,
+                offset: (0, 0),
+                reactive: true,
+            },
+            parent_size: None,
+            // Only a popup the user pinned takes the keyboard (and closes on a click outside).
+            grab: self.state.pinned,
+            close_with_children: true,
+            input_zone: None,
+        })
     }
 
-    fn destroy_surface(&mut self, id: window::Id) -> Task<Message> {
-        self.surfaces.remove(&id);
-        cosmic::task::message(cosmic::Action::Cosmic(cosmic::app::Action::Surface(
-            destroy_layer_shell(id),
-        )))
+    /// Replaces the popup with one that grabs the keyboard and pointer.
+    fn regrab_popup(&mut self) -> Task<Message> {
+        let Some(old) = self.popup.take() else {
+            return Task::none();
+        };
+        Task::batch([destroy_popup(old), self.open_popup()])
     }
 
-    /// Sends the input zone and blur region of every surface whose pill changed size.
+    /// Resizes the open popup when the island's target size outgrows it.
+    fn resize_popup(&mut self) -> Task<Message> {
+        let Some(id) = self.popup else {
+            return Task::none();
+        };
+        let wanted = self.popup_wanted();
+        if wanted.width <= self.popup_size.width && wanted.height <= self.popup_size.height {
+            return Task::none();
+        }
+        let size = Size::new(
+            wanted.width.max(self.popup_size.width),
+            wanted.height.max(self.popup_size.height),
+        );
+        self.popup_size = size;
+        self.state.synced = None;
+        set_size(id, size.width as u32, size.height as u32)
+    }
+
+    /// Takes the popup down once the island has shrunk back into the applet.
+    fn close_popup_when_done(&mut self, now: Instant) -> Task<Message> {
+        if self.state.expanded || self.state.anim.is_animating(now) {
+            return Task::none();
+        }
+        let Some(id) = self.popup.take() else {
+            return Task::none();
+        };
+        self.popup_size = Size::ZERO;
+        destroy_popup(id)
+    }
+
+    /// Sends the blur region of the popup when its pill changed size.
     fn sync_surfaces(&mut self, now: Instant) -> Task<Message> {
+        let Some(id) = self.popup else {
+            return Task::none();
+        };
         let theme = cosmic::theme::active();
         let radii = view::Radii::from_theme(theme.cosmic());
-        let transparent = theme.transparent;
-        let mut tasks = Vec::new();
-        for (&id, state) in &mut self.surfaces {
-            let size = state.anim.at(now);
-            if state.synced == Some(size) {
-                continue;
-            }
-            state.synced = Some(size);
-            tasks.push(set_input_zone(id, vec![geometry::pill_bounds(size)]));
-            let radius = radii.pill(state.expanded);
-            let region = transparent.then(|| geometry::blur_region(size, radius));
-            tasks.push(blur(id, region).discard());
-        }
-        Task::batch(tasks)
+        let size = self.state.anim.at(now);
+        let task = if self.state.synced == Some(size) {
+            Task::none()
+        } else {
+            self.state.synced = Some(size);
+            let radius = radii.pill(self.state.expanded);
+            let region = theme
+                .transparent
+                .then(|| geometry::blur_region(size, radius, self.popup_size, self.anchor()));
+            blur(id, region).discard()
+        };
+        Task::batch([task, self.close_popup_when_done(now)])
     }
 }
 
@@ -1278,21 +1229,6 @@ impl Island {
             let found = lyrics::fetch(track.clone()).await;
             Message::LyricsLoaded(track, found)
         })
-    }
-
-    fn publish_compact_width(&mut self, width: f32) -> Task<Message> {
-        let width = width.round() as u32;
-        if width == 0 {
-            return Task::none();
-        }
-        self.compact_width = width;
-        match self.dbus.clone() {
-            Some(connection) => cosmic::iced::Task::<()>::future(
-                crate::ipc::set_compact_width(connection, width),
-            )
-            .discard(),
-            None => Task::none(),
-        }
     }
 
     fn load_shelf(&mut self) {
@@ -1401,14 +1337,9 @@ fn delayed(delay: Duration, message: Message) -> Task<Message> {
     })
 }
 
-fn set_input_zone<M: 'static>(id: window::Id, zone: Vec<cosmic::iced::Rectangle>) -> Task<M> {
-    use cosmic::iced::platform_specific::runtime::{self, wayland};
-    cosmic::iced::runtime::task::effect(cosmic::iced::runtime::Action::PlatformSpecific(
-        runtime::Action::Wayland(wayland::Action::LayerSurface(
-            wayland::layer_surface::Action::InputZone {
-                id,
-                zone: Some(zone),
-            },
-        )),
-    ))
+/// Thickness of the panel at the applet: its width and height at the panel's cross axis.
+fn applet_thickness(core: &Core) -> (u16, u16) {
+    let (w, h) = core.applet.suggested_size(true);
+    let (pw, ph) = core.applet.suggested_padding(true);
+    (w + 2 * pw, h + 2 * ph)
 }

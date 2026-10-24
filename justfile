@@ -26,14 +26,11 @@ check:
     cargo clippy --all-targets -- -D warnings
     cargo test
 
-# Runs the island from the build tree, e.g. `just run --expand=calendar`.
-run *args:
-    RUST_LOG=warn,cosmic_ext_island=debug cargo run --bin {{name}} -- {{args}}
-
+# Installs the applet. Add it in Settings → Desktop → Panel → Applets.
+# For screenshots, start it open on a tab: COSMIC_EXT_ISLAND_EXPAND=calendar.
 install:
     # Builds as the user; a root or staged install takes what was built before.
     if [ -z "{{rootdir}}" ] && [ "$(id -u)" != 0 ]; then cargo build --release; fi
-    install -Dm0755 target/release/{{name}} "{{dest-bindir}}/{{name}}"
     install -Dm0755 target/release/{{name}}-applet "{{dest-bindir}}/{{name}}-applet"
     # Absolute Exec paths: the panel and D-Bus may not have {{bindir}} in PATH.
     mkdir -p "{{dest-sharedir}}/applications"
@@ -42,11 +39,9 @@ install:
     install -Dm0644 res/{{appid}}.svg "{{dest-sharedir}}/icons/hicolor/scalable/apps/{{appid}}.svg"
     install -Dm0644 res/{{appid}}-symbolic.svg "{{dest-sharedir}}/icons/hicolor/symbolic/apps/{{appid}}-symbolic.svg"
     install -Dm0644 res/{{appid}}.metainfo.xml "{{dest-sharedir}}/metainfo/{{appid}}.metainfo.xml"
-    mkdir -p "{{dest-sharedir}}/dbus-1/services"
-    sed 's|@bindir@|{{bindir}}|' res/{{appid}}.service.in > "{{dest-sharedir}}/dbus-1/services/{{appid}}.service"
 
 uninstall:
-    -pkill -f '/{{name}}$'
+    -pkill -f '/{{name}}-applet$'
     rm -f "{{dest-bindir}}/{{name}}" "{{dest-bindir}}/{{name}}-applet"
     rm -f "{{dest-sharedir}}/applications/{{appid}}.desktop" "{{dest-sharedir}}/applications/{{appid}}.Applet.desktop"
     # Earlier versions started from autostart.
@@ -54,6 +49,7 @@ uninstall:
     rm -f "{{dest-sharedir}}/icons/hicolor/scalable/apps/{{appid}}.svg"
     rm -f "{{dest-sharedir}}/icons/hicolor/symbolic/apps/{{appid}}-symbolic.svg"
     rm -f "{{dest-sharedir}}/metainfo/{{appid}}.metainfo.xml"
+    # Earlier versions ran the island as a separate daemon.
     rm -f "{{dest-sharedir}}/dbus-1/services/{{appid}}.service"
 
 # Builds a .deb into target/debian, from the release build.

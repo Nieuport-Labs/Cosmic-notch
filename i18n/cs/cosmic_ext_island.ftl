@@ -3,19 +3,12 @@ tab-home = Domů
 nothing-playing = Nic nehraje
 shelf-empty = Sem přetáhni soubory
 
-displays = Monitory
-show-on = Zobrazit na
-outputs-follow-panel = Stejných monitorech jako panel
-outputs-all = Všech monitorech
-outputs-active = Aktivním monitoru
-outputs-named = Vybraných monitorech
 clock = Hodiny
 clock-format = Formát
 clock-format-hint = Prázdné = podle systémových hodin. Syntaxe chrono, např. %a %-d. %-m. %H:%M
 behavior = Chování
 hover-delay = Rozbalit po najetí za (ms)
 collapse-delay = Sbalit po odjetí za (ms)
-hide-in-fullscreen = Skrýt u okna přes celou obrazovku
 compact = Kompaktní ostrov
 show-cover = Obal alba
 show-title = Název skladby

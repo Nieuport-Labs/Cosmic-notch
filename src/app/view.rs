@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use cosmic::iced::advanced::text::{Ellipsize, EllipsizeHeightLimit, Wrapping};
 use cosmic::iced::clipboard::dnd::DndAction;
+use cosmic::applet::cosmic_panel_config::PanelAnchor;
 use cosmic::iced::{Alignment, Color, Length, Size, window};
 use cosmic::widget::{self, button, container, icon};
 use cosmic::Element;
@@ -24,6 +25,8 @@ use crate::modules::shelf::{Clip, DragOut, Item};
 
 /// Width of the expanded island's content, from the design.
 pub const EXPANDED_WIDTH: f32 = 640.0;
+/// Gap between the panel's edges and the compact island.
+const COMPACT_INSET: f32 = 4.0;
 /// Size of a file's preview on the shelf; its name is no wider.
 const PREVIEW: f32 = 88.0;
 
@@ -48,10 +51,71 @@ impl Radii {
 }
 
 impl Island {
-    pub(super) fn island_view(&self, id: window::Id) -> Element<'_, Message> {
-        let Some(state) = self.surfaces.get(&id) else {
-            return widget::Space::new().into();
+    /// The compact island, which is the applet in the panel.
+    pub(super) fn applet_view(&self) -> Element<'_, Message> {
+        let (_, thickness) = super::applet_thickness(&self.core);
+        let horizontal = self.core.applet.is_horizontal();
+        let pill_height = (f32::from(thickness) - 2.0 * COMPACT_INSET).max(20.0);
+        let content = if horizontal {
+            self.compact_view(pill_height, 1.0)
+        } else {
+            self.compact_column(f32::from(thickness) - 2.0 * COMPACT_INSET)
         };
+        let pill = container(measure(content, Message::CompactMeasured))
+            .clip(true)
+            .class(cosmic::theme::Container::custom(move |theme| {
+                pill_style(theme, Size::new(f32::MAX, pill_height), false, 0.0)
+            }));
+        let pill = widget::mouse_area(pill)
+            .on_enter(Message::CompactEntered)
+            .on_exit(Message::CompactLeft)
+            .on_press(Message::CompactPressed)
+            .on_middle_press(Message::MediaCommand(media::Command::PlayPause));
+        let island = self.id;
+        let pill = widget::dnd_destination::dnd_destination_for_data::<Clip, _>(
+            pill,
+            move |clip, _| Message::Dropped(island, clip),
+        )
+        .on_enter(move |_, _, _| Message::DragEntered(island))
+        .on_leave(move || Message::DragLeft(island));
+        // The panel gives the applet exactly the room the pill takes.
+        let (width, height) = if horizontal {
+            (Length::Shrink, Length::Fixed(f32::from(thickness)))
+        } else {
+            (Length::Fixed(f32::from(thickness)), Length::Shrink)
+        };
+        self.core.applet.autosize_window(
+            container(pill)
+                .width(width)
+                .height(height)
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center),
+        )
+        .into()
+    }
+
+    /// The compact island on a panel at the side of the screen: the cover or
+    /// the time, stacked.
+    fn compact_column(&self, width: f32) -> Element<'_, Message> {
+        let spacing = cosmic::theme::spacing();
+        let mut column = widget::Column::new()
+            .align_x(Alignment::Center)
+            .spacing(spacing.space_xxxs)
+            .padding([spacing.space_xxs, 0])
+            .width(Length::Fixed(width));
+        if self.media.is_some() && self.config.show_cover {
+            column = column.push(self.cover((width * 0.7).round(), true, 1.0));
+        }
+        let now = self.now;
+        column
+            .push(widget::text::body(now.format("%H").to_string()))
+            .push(widget::text::body(now.format("%M").to_string()))
+            .into()
+    }
+
+    pub(super) fn island_view(&self, id: window::Id) -> Element<'_, Message> {
+        let state = &self.state;
+        let anchor = self.anchor();
         let now = Instant::now();
         let size = state.anim.at(now);
         let expanded = state.expanded;
@@ -61,7 +125,7 @@ impl Island {
         let content = if expanded {
             self.expanded_view(id, opacity)
         } else {
-            self.compact_view(opacity)
+            self.compact_view(f32::from(super::applet_thickness(&self.core).1) - 2.0 * COMPACT_INSET, opacity)
         };
         let content = fade(content, opacity, scale);
 
@@ -88,17 +152,23 @@ impl Island {
         .on_enter(move |_, _, _| Message::DragEntered(id))
         .on_leave(move || Message::DragLeft(id));
 
+        // The pill hangs from the edge of the panel, along which it is centered.
+        let (align_x, align_y) = match anchor {
+            PanelAnchor::Top => (Alignment::Center, Alignment::Start),
+            PanelAnchor::Bottom => (Alignment::Center, Alignment::End),
+            PanelAnchor::Left => (Alignment::Start, Alignment::Center),
+            PanelAnchor::Right => (Alignment::End, Alignment::Center),
+        };
         container(pill)
             .width(Length::Fill)
             .height(Length::Fill)
-            .align_x(Alignment::Center)
-            .align_y(Alignment::Start)
+            .align_x(align_x)
+            .align_y(align_y)
             .into()
     }
 
-    fn compact_view(&self, opacity: f32) -> Element<'_, Message> {
+    fn compact_view(&self, height: f32, opacity: f32) -> Element<'_, Message> {
         let spacing = cosmic::theme::spacing();
-        let height = self.panel.compact_height as f32;
         let mut row = widget::Row::new()
             .align_y(Alignment::Center)
             .spacing(spacing.space_xs)
@@ -626,7 +696,7 @@ impl Island {
             return self.share_page_view();
         }
         let spacing = cosmic::theme::spacing();
-        let receiving = self.surfaces.get(&id).is_some_and(|s| s.drag_over);
+        let receiving = self.state.drag_over;
         let items = &self.shelves.current().items;
 
         let files: Element<'_, Message> = if items.is_empty() {

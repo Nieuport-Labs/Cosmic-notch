@@ -8,19 +8,6 @@ use serde::{Deserialize, Serialize};
 pub const APP_ID: &str = "io.github.jiricepelka.CosmicExtIsland";
 pub const CONFIG_VERSION: u64 = 1;
 
-/// Which outputs show an island.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Outputs {
-    /// Same outputs as the top panel.
-    #[default]
-    FollowPanel,
-    All,
-    /// The output that currently has focus.
-    Active,
-    /// Outputs by connector name, e.g. `eDP-1`.
-    Named(Vec<String>),
-}
-
 /// Parts of the expanded island that the user can hide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Section {
@@ -44,7 +31,6 @@ impl Section {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, CosmicConfigEntry)]
 #[version = 1]
 pub struct IslandConfig {
-    pub outputs: Outputs,
     /// chrono format string for the clock; `None` follows the COSMIC time applet.
     pub clock_format: Option<String>,
     /// Delay before the island expands under the pointer, in milliseconds.
@@ -62,8 +48,6 @@ pub struct IslandConfig {
     pub hidden_sections: Vec<Section>,
     /// Keep the tasks in step with Google Tasks, through GNOME Online Accounts.
     pub google_tasks: bool,
-    /// Step aside on outputs where a fullscreen window is in front, like the panel.
-    pub hide_in_fullscreen: bool,
 }
 
 impl IslandConfig {
@@ -75,7 +59,6 @@ impl IslandConfig {
 impl Default for IslandConfig {
     fn default() -> Self {
         Self {
-            outputs: Outputs::default(),
             clock_format: None,
             hover_delay_ms: 300,
             collapse_delay_ms: 400,
@@ -87,7 +70,6 @@ impl Default for IslandConfig {
             lyrics: false,
             hidden_sections: Vec::new(),
             google_tasks: false,
-            hide_in_fullscreen: true,
         }
     }
 }

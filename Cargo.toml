@@ -6,11 +6,7 @@ rust-version = "1.88"
 license = "GPL-3.0-only"
 description = "Dynamic Island for the COSMIC desktop"
 repository = "https://github.com/Nieuport-Labs/Cosmic-notch"
-default-run = "cosmic-ext-island"
-
-[[bin]]
-name = "cosmic-ext-island"
-path = "src/bin/cosmic-ext-island.rs"
+default-run = "cosmic-ext-island-applet"
 
 [[bin]]
 name = "cosmic-ext-island-applet"
