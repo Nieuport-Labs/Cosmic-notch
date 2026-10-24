@@ -17,13 +17,9 @@ use crate::fl;
 use crate::island::fade::faded;
 use crate::modules::system::{self, Charge, Disk};
 
-/// Height of a card on the home tab.
-const CARD_HEIGHT: f32 = 150.0;
-const GRAPH_HEIGHT: f32 = 40.0;
-/// Height of the mini player and the usage card below the graphs.
-const SMALL_CARD_HEIGHT: f32 = 128.0;
+const GRAPH_HEIGHT: f32 = 36.0;
 /// Cover of the mini player.
-const COVER: f32 = SMALL_CARD_HEIGHT - 32.0;
+const COVER: f32 = 72.0;
 
 impl Island {
     pub(super) fn home_tab(&self, opacity: f32) -> Element<'_, Message> {
@@ -166,7 +162,7 @@ impl Island {
         }
         let usage = small_card(usage_body.into());
 
-        let mut second_row = widget::Row::new().spacing(spacing.space_s);
+        let mut second_row = widget::Row::new().spacing(spacing.space_l);
         if self.config.shows_card(HomeCard::Player)
             && let Some(player) = self.mini_player(opacity)
         {
@@ -199,22 +195,32 @@ impl Island {
             .push(widget::Space::new().width(Length::Fill))
             .push(secondary(fl!("uptime", time = format_uptime(monitor.uptime))));
 
-        let mut cards = widget::Row::new().spacing(spacing.space_s);
-        let mut has_cards = false;
+        // The figures side by side, with room and a hairline between them.
+        let mut figures: Vec<Element<'_, Message>> = Vec::new();
         if self.config.shows_card(HomeCard::Cpu) {
-            cards = cards.push(cpu);
-            has_cards = true;
+            figures.push(cpu);
         }
         if let Some(gpu) = gpu {
-            cards = cards.push(gpu);
-            has_cards = true;
+            figures.push(gpu);
         }
         if self.config.shows_card(HomeCard::Network) {
-            cards = cards.push(network);
-            has_cards = true;
+            figures.push(network);
+        }
+        let has_cards = !figures.is_empty();
+        let mut cards = widget::Row::new().spacing(spacing.space_m);
+        for (i, figure) in figures.into_iter().enumerate() {
+            if i > 0 {
+                cards = cards.push(
+                    container(widget::Space::new())
+                        .width(Length::Fixed(1.0))
+                        .height(Length::Fixed(96.0))
+                        .class(cosmic::theme::Container::custom(|theme| plate_style(theme, [0.0; 4]))),
+                );
+            }
+            cards = cards.push(figure);
         }
 
-        let mut page = widget::Column::new().spacing(spacing.space_s);
+        let mut page = widget::Column::new().spacing(spacing.space_m).padding([spacing.space_xxs, spacing.space_xs]);
         if self.config.shows_card(HomeCard::Greeting) {
             page = page.push(self.greeting());
         }
@@ -224,7 +230,7 @@ impl Island {
         if self.config.shows_card(HomeCard::Player) && self.media.is_some() || has_usage {
             page = page.push(second_row);
         }
-        page.push(container(footer).padding([0, spacing.space_xxs])).into()
+        page.push(footer).into()
     }
 }
 
@@ -243,13 +249,11 @@ impl Island {
             Some(name) => format!("{greeting}, {name}"),
             None => greeting,
         };
-        let date = crate::modules::clock::format(&self.now, "%A %-d. %B", self.locale);
+        // The date is in the island's header already.
         let mut row = widget::Row::new()
             .push(
-                widget::Column::new()
-                    .push(widget::text::title3(title).font(cosmic::font::bold()))
-                    .push(secondary(date))
-                    .spacing(2)
+                widget::text::title3(title)
+                    .font(cosmic::font::bold())
                     .width(Length::Fill),
             )
             .align_y(Alignment::Center);
@@ -273,7 +277,7 @@ impl Island {
                 })),
             );
         }
-        container(row).padding([0, spacing.space_xxs]).into()
+        row.into()
     }
 
     /// "Dentist · 14:30" for the next event, if Google Calendar shows one.
@@ -379,8 +383,7 @@ impl Island {
         let played = media.length.map_or(0.0, |length| {
             media.position_at(std::time::Instant::now()).as_secs_f32() / length.as_secs_f32().max(1.0)
         });
-        Some(small_card_filled(
-            played,
+        Some(small_card(
             widget::Row::new()
                 .push(
                     widget::mouse_area(self.cover(COVER, false, opacity))
@@ -389,11 +392,12 @@ impl Island {
                 .push(
                     widget::Column::new()
                         .push(text)
-                        .push(widget::Space::new().height(Length::Fill))
                         .push(controls)
-                        .height(Length::Fill),
+                        .push(progress_line(played))
+                        .spacing(spacing.space_xxs),
                 )
                 .spacing(spacing.space_s)
+                .align_y(Alignment::Center)
                 .into(),
         ))
     }
@@ -412,56 +416,38 @@ fn control(
         .into()
 }
 
-/// A card without a title, for the second row.
+/// A part of the second row, without a plate.
 fn small_card(body: Element<'_, Message>) -> Element<'_, Message> {
-    small_card_filled(0.0, body)
+    container(body).width(Length::Fill).into()
 }
 
-/// A card whose background fills from the left with `share` (0–1) in the accent color,
-/// like a progress bar behind the content.
-fn small_card_filled(share: f32, body: Element<'_, Message>) -> Element<'_, Message> {
-    let share = share.clamp(0.0, 1.0);
-    let filled = (share * 1000.0).round() as u16;
-    let mut fill = widget::Row::new().height(Length::Fill);
+/// A thin line that fills with `share` (0–1), for how far the track has played.
+fn progress_line(share: f32) -> Element<'static, Message> {
+    let filled = (share.clamp(0.0, 1.0) * 1000.0).round() as u16;
+    let mut row = widget::Row::new().height(Length::Fill);
     if filled > 0 {
-        fill = fill.push(
+        row = row.push(
             container(widget::Space::new())
                 .width(Length::FillPortion(filled))
                 .height(Length::Fill)
-                .class(cosmic::theme::Container::custom(move |theme| {
-                    let cosmic = theme.cosmic();
-                    let r = cosmic.radius_s();
-                    // Square on the right until the fill reaches the card's corner.
-                    let right = if filled >= 995 { r[1] } else { 0.0 };
-                    container::Style {
-                        background: Some(
-                            faded(Color { a: 0.22, ..cosmic.accent_color().into() }).into(),
-                        ),
-                        border: cosmic::iced::Border {
-                            radius: [r[0], right, right, r[3]].into(),
-                            ..Default::default()
-                        },
+                .class(cosmic::theme::Container::custom(|theme| container::Style {
+                    background: Some(faded(theme.cosmic().accent_color()).into()),
+                    border: cosmic::iced::Border {
+                        radius: 2.0.into(),
                         ..Default::default()
-                    }
+                    },
+                    ..Default::default()
                 })),
         );
     }
     if filled < 1000 {
-        fill = fill.push(widget::Space::new().width(Length::FillPortion(1000 - filled)));
+        row = row.push(widget::Space::new().width(Length::FillPortion(1000 - filled)));
     }
-    container(cosmic::iced::widget::stack![
-        fill,
-        container(body)
-            .padding(cosmic::theme::spacing().space_s)
-            .width(Length::Fill)
-            .height(Length::Fill),
-    ])
-    .width(Length::Fill)
-    .height(Length::Fixed(SMALL_CARD_HEIGHT))
-    .class(cosmic::theme::Container::custom(|theme| {
-        plate_style(theme, theme.cosmic().radius_s())
-    }))
-    .into()
+    container(row)
+        .width(Length::Fill)
+        .height(Length::Fixed(3.0))
+        .class(cosmic::theme::Container::custom(|theme| plate_style(theme, [2.0; 4])))
+        .into()
 }
 
 fn secondary(text: String) -> widget::Text<'static, cosmic::Theme> {
@@ -479,28 +465,22 @@ fn card<'a>(
     body: Element<'a, Message>,
 ) -> Element<'a, Message> {
     let spacing = cosmic::theme::spacing();
-    container(
-        widget::Column::new()
-            .push(
-                widget::Row::new()
-                    .push(
-                        widget::text::heading(title)
-                            .class(cosmic::theme::Text::Custom(accent_text))
-                            .width(Length::Fill),
-                    )
-                    .push(side)
-                    .align_y(Alignment::Center),
-            )
-            .push(body)
-            .spacing(spacing.space_xxs),
-    )
-    .padding(spacing.space_s)
-    .width(Length::Fill)
-    .height(Length::Fixed(CARD_HEIGHT))
-    .class(cosmic::theme::Container::custom(|theme| {
-        plate_style(theme, theme.cosmic().radius_s())
-    }))
-    .into()
+    // No plate around it: the page breathes through the space between, not boxes.
+    widget::Column::new()
+        .push(
+            widget::Row::new()
+                .push(
+                    widget::text::heading(title)
+                        .class(cosmic::theme::Text::Custom(accent_text))
+                        .width(Length::Fill),
+                )
+                .push(side)
+                .align_y(Alignment::Center),
+        )
+        .push(body)
+        .spacing(spacing.space_xxs)
+        .width(Length::Fill)
+        .into()
 }
 
 /// A history as thin bars, newest on the right; `hanging` bars grow down from the top.
@@ -564,9 +544,9 @@ fn meter(share: f32) -> Element<'static, Message> {
     }
     container(row.height(Length::Fill))
         .width(Length::Fill)
-        .height(Length::Fixed(6.0))
+        .height(Length::Fixed(4.0))
         .class(cosmic::theme::Container::custom(|theme| {
-            plate_style(theme, [3.0; 4])
+            plate_style(theme, [2.0; 4])
         }))
         .into()
 }

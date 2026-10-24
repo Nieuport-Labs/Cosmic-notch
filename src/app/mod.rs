@@ -159,6 +159,8 @@ pub struct Island {
     state: SurfaceState,
     /// The popup showing the expanded island, while it is open or closing.
     popup: Option<window::Id>,
+    /// The popup is on screen, covering the applet's pill.
+    popup_shown: bool,
     /// Size of the popup's surface; its input region is the whole of it.
     popup_size: Size,
     /// Size of the compact island in the panel.
@@ -232,6 +234,8 @@ pub enum Message {
     CompactPressed,
     /// The compositor closed the popup.
     PopupClosed(window::Id),
+    /// The popup is on screen: it can be blurred now, and the applet's own pill hidden under it.
+    PopupConfigured(window::Id),
     Config(IslandConfig),
     TimeConfig(TimeAppletConfig),
     Settings(settings::Message),
@@ -357,6 +361,7 @@ impl cosmic::Application for Island {
                 last_expanded: Size::new(view::EXPANDED_WIDTH + 24.0, 300.0),
             },
             popup: None,
+            popup_shown: false,
             popup_size: Size::ZERO,
             compact_size: compact,
             tab: flags.expand.unwrap_or_default(),
@@ -443,9 +448,18 @@ impl cosmic::Application for Island {
                     return self.update(Message::PillPressed(self.id));
                 }
             }
+            Message::PopupConfigured(popup) => {
+                if self.popup == Some(popup) {
+                    self.popup_shown = true;
+                    // A blur region sent before the surface existed went nowhere.
+                    self.state.synced = None;
+                    return self.sync_surfaces(Instant::now());
+                }
+            }
             Message::PopupClosed(popup) => {
                 if self.popup == Some(popup) {
                     self.popup = None;
+                    self.popup_shown = false;
                     self.state.pinned = false;
                     self.state.expanded = false;
                     self.state.anim = SizeAnimation::settled(self.compact_size);
@@ -1022,6 +1036,9 @@ impl cosmic::Application for Island {
                     wayland::Event::Popup(wayland::PopupEvent::Done, _, id),
                 )) => Some(Message::PopupClosed(id)),
                 cosmic::iced::Event::PlatformSpecific(PlatformSpecific::Wayland(
+                    wayland::Event::Popup(wayland::PopupEvent::Configured { .. }, _, id),
+                )) => Some(Message::PopupConfigured(id)),
+                cosmic::iced::Event::PlatformSpecific(PlatformSpecific::Wayland(
                     wayland::Event::BlurEnabled,
                 )) => Some(Message::SyncSurfaces),
                 cosmic::iced::Event::Keyboard(keyboard::Event::KeyPressed {
@@ -1281,6 +1298,14 @@ impl Island {
             PanelAnchor::Right => (Anchor::Right, Gravity::Left),
         };
         let (_, thickness) = applet_thickness(&self.core);
+        // The applet's pill is inset from the panel's edge; the popup's pill starts where it does.
+        let inset = view::COMPACT_INSET as i32;
+        let offset = match self.anchor() {
+            PanelAnchor::Top => (0, inset),
+            PanelAnchor::Bottom => (0, -inset),
+            PanelAnchor::Left => (inset, 0),
+            PanelAnchor::Right => (-inset, 0),
+        };
         get_popup(SctkPopupSettings {
             parent: self.id,
             id,
@@ -1305,7 +1330,7 @@ impl Island {
                 gravity,
                 // Slide along the panel to stay on the screen.
                 constraint_adjustment: 3,
-                offset: (0, 0),
+                offset,
                 reactive: true,
             },
             parent_size: None,
@@ -1321,6 +1346,7 @@ impl Island {
         let Some(old) = self.popup.take() else {
             return Task::none();
         };
+        // The applet's pill stays hidden: the new popup takes the old one's place.
         Task::batch([destroy_popup(old), self.open_popup()])
     }
 
@@ -1351,6 +1377,7 @@ impl Island {
             return Task::none();
         };
         self.popup_size = Size::ZERO;
+        self.popup_shown = false;
         destroy_popup(id)
     }
 

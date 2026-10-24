@@ -34,7 +34,7 @@ const LYRICS_HEIGHT: f32 = LYRICS_LINE * LYRICS_ROWS as f32;
 const LYRICS_SMALL: f32 = 14.0;
 const LYRICS_LARGE: f32 = 25.0;
 /// Gap between the panel's edges and the compact island.
-const COMPACT_INSET: f32 = 4.0;
+pub(super) const COMPACT_INSET: f32 = 4.0;
 /// Size of a file's preview on the shelf; its name is no wider.
 const PREVIEW: f32 = 88.0;
 
@@ -69,10 +69,18 @@ impl Island {
         } else {
             self.compact_column(f32::from(thickness) - 2.0 * COMPACT_INSET)
         };
+        // While the popup covers it, the applet's pill keeps its room but draws
+        // nothing, so the two are never seen on top of each other.
+        let hidden = self.popup_shown;
+        let content = fade(content, if hidden { 0.0 } else { 1.0 }, 1.0);
         let pill = container(measure(content, Message::CompactMeasured))
             .clip(true)
             .class(cosmic::theme::Container::custom(move |theme| {
-                pill_style(theme, Size::new(f32::MAX, pill_height), false, 0.0)
+                if hidden {
+                    container::Style::default()
+                } else {
+                    pill_style(theme, Size::new(f32::MAX, pill_height), false, 0.0)
+                }
             }));
         let pill = widget::mouse_area(pill)
             .on_enter(Message::CompactEntered)
