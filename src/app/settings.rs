@@ -8,7 +8,7 @@ use cosmic::widget::{self, settings};
 use cosmic::Element;
 
 use super::Island;
-use crate::config::Section;
+use crate::config::{HomeCard, Section};
 use crate::fl;
 
 #[derive(Debug, Clone)]
@@ -22,6 +22,7 @@ pub enum Message {
     ReduceMotion(bool),
     Lyrics(bool),
     ShowSection(Section, bool),
+    ShowCard(HomeCard, bool),
     GoogleTasks(bool),
     GoogleCalendar(bool),
     OpenOnlineAccounts,
@@ -53,6 +54,14 @@ impl Island {
                 if hidden.len() < Section::ALL.len() {
                     self.write(|c, h| c.set_hidden_sections(h, hidden));
                 }
+            }
+            Message::ShowCard(card, show) => {
+                let mut hidden = self.config.hidden_cards.clone();
+                hidden.retain(|c| *c != card);
+                if !show {
+                    hidden.push(card);
+                }
+                self.write(|c, h| c.set_hidden_cards(h, hidden));
             }
             Message::GoogleTasks(v) => {
                 self.write(|c, h| c.set_google_tasks(h, v));
@@ -200,6 +209,27 @@ impl Island {
                 .spacing(spacing.space_xxxs),
         );
 
+        let mut cards = settings::section().title(fl!("home-cards"));
+        for card in HomeCard::ALL {
+            // No card for a graphics card the kernel doesn't report on.
+            if card == HomeCard::Gpu && !crate::modules::system::gpu_present() {
+                continue;
+            }
+            let label = match card {
+                HomeCard::Greeting => fl!("card-greeting"),
+                HomeCard::Cpu => fl!("card-cpu"),
+                HomeCard::Gpu => fl!("card-gpu"),
+                HomeCard::Network => fl!("card-network"),
+                HomeCard::Player => fl!("card-player"),
+                HomeCard::Storage => fl!("card-storage"),
+            };
+            cards = cards.add(settings::item(
+                label,
+                widget::toggler(config.shows_card(card))
+                    .on_toggle(move |show| Message::ShowCard(card, show)),
+            ));
+        }
+
         let tasks = settings::section().title(fl!("google")).add(
             widget::Column::new()
                 .push(settings::item(
@@ -226,6 +256,7 @@ impl Island {
                 .push(clock)
                 .push(behavior)
                 .push(compact)
+                .push(cards)
                 .push(tasks)
                 .push(lyrics)
                 .spacing(spacing.space_s)

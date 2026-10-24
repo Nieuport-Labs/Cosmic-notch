@@ -12,12 +12,13 @@ use cosmic::Element;
 
 use super::view::{accent_text, button_class, plate_style, secondary_text};
 use super::{Island, Message};
+use crate::config::HomeCard;
 use crate::fl;
 use crate::island::fade::faded;
 use crate::modules::system::{self, Charge, Disk};
 
 /// Height of a card on the home tab.
-const CARD_HEIGHT: f32 = 160.0;
+const CARD_HEIGHT: f32 = 150.0;
 const GRAPH_HEIGHT: f32 = 40.0;
 /// Height of the mini player and the usage card below the graphs.
 const SMALL_CARD_HEIGHT: f32 = 128.0;
@@ -44,11 +45,7 @@ impl Island {
                     widget::Row::new()
                         .push(widget::text::title2(percent(monitor.cpu_now())).font(cosmic::font::bold()))
                         .push(secondary(match monitor.frequency {
-                            Some(ghz) => format!(
-                                "{} · {}",
-                                fl!("cores", count = monitor.cores),
-                                system::format_ghz(ghz, locale)
-                            ),
+                            Some(ghz) => system::format_ghz(ghz, locale),
                             None => fl!("cores", count = monitor.cores),
                         }))
                         .spacing(spacing.space_xs)
@@ -85,20 +82,54 @@ impl Island {
             widget::Space::new().into(),
             widget::Column::new()
                 .push(
-                    widget::Row::new()
+                    widget::Column::new()
                         .push(rate("go-down-symbolic", rx))
                         .push(rate("go-up-symbolic", tx))
-                        .spacing(spacing.space_s),
+                        .spacing(2),
                 )
                 .push(
                     widget::Column::new()
-                        .push(graph(&rx_history, 1.0, GRAPH_HEIGHT / 2.0, false))
-                        .push(graph(&tx_history, 1.0, GRAPH_HEIGHT / 2.0, true))
+                        .push(graph(&rx_history, 1.0, GRAPH_HEIGHT / 3.0, false))
+                        .push(graph(&tx_history, 1.0, GRAPH_HEIGHT / 3.0, true))
                         .spacing(1),
                 )
                 .spacing(spacing.space_xxs)
                 .into(),
         );
+
+        // The graphics card, where the kernel reports on one.
+        let gpu = (system::gpu_present() && self.config.shows_card(HomeCard::Gpu)).then(|| {
+            let info = monitor.gpu.clone().unwrap_or_default();
+            let mut side = widget::Row::new().spacing(spacing.space_xxs);
+            if let Some(temperature) = info.temperature {
+                side = side.push(secondary(format!("{temperature:.0} °C")));
+            }
+            let detail = match (info.freq_mhz, info.vram) {
+                (_, Some((used, total))) => fl!("used-of", used = bytes(used), total = bytes(total)),
+                (Some(mhz), None) if mhz > 0 => format!("{mhz} MHz"),
+                _ => info.name.to_owned(),
+            };
+            card(
+                fl!("gpu"),
+                side.into(),
+                widget::Column::new()
+                    .push(
+                        widget::Row::new()
+                            .push(
+                                widget::text::title2(
+                                    monitor.gpu_busy.back().map_or_else(|| "– %".to_owned(), |b| percent(*b)),
+                                )
+                                .font(cosmic::font::bold()),
+                            )
+                            .push(secondary(detail))
+                            .spacing(spacing.space_xs)
+                            .align_y(Alignment::Center),
+                    )
+                    .push(graph(&monitor.gpu_busy, 1.0, GRAPH_HEIGHT, false))
+                    .spacing(spacing.space_xxs)
+                    .into(),
+            )
+        });
 
         // Memory and disks, one line and bar each.
         let memory = monitor.memory;
@@ -135,11 +166,16 @@ impl Island {
         }
         let usage = small_card(usage_body.into());
 
-        let mut second_row = widget::Row::new().spacing(spacing.space_xs);
-        if let Some(player) = self.mini_player(opacity) {
+        let mut second_row = widget::Row::new().spacing(spacing.space_s);
+        if self.config.shows_card(HomeCard::Player)
+            && let Some(player) = self.mini_player(opacity)
+        {
             second_row = second_row.push(player);
         }
-        second_row = second_row.push(usage);
+        let has_usage = self.config.shows_card(HomeCard::Storage);
+        if has_usage {
+            second_row = second_row.push(usage);
+        }
 
         // Battery and uptime below the cards.
         let mut footer = widget::Row::new()
@@ -163,18 +199,131 @@ impl Island {
             .push(widget::Space::new().width(Length::Fill))
             .push(secondary(fl!("uptime", time = format_uptime(monitor.uptime))));
 
-        widget::Column::new()
-            .push(
-                widget::Row::new()
-                    .push(cpu)
-                    .push(network)
-                    .spacing(spacing.space_xs),
-            )
-            .push(second_row)
-            .push(container(footer).padding([0, spacing.space_xxs]))
-            .spacing(spacing.space_xs)
-            .into()
+        let mut cards = widget::Row::new().spacing(spacing.space_s);
+        let mut has_cards = false;
+        if self.config.shows_card(HomeCard::Cpu) {
+            cards = cards.push(cpu);
+            has_cards = true;
+        }
+        if let Some(gpu) = gpu {
+            cards = cards.push(gpu);
+            has_cards = true;
+        }
+        if self.config.shows_card(HomeCard::Network) {
+            cards = cards.push(network);
+            has_cards = true;
+        }
+
+        let mut page = widget::Column::new().spacing(spacing.space_s);
+        if self.config.shows_card(HomeCard::Greeting) {
+            page = page.push(self.greeting());
+        }
+        if has_cards {
+            page = page.push(cards);
+        }
+        if self.config.shows_card(HomeCard::Player) && self.media.is_some() || has_usage {
+            page = page.push(second_row);
+        }
+        page.push(container(footer).padding([0, spacing.space_xxs])).into()
     }
+}
+
+impl Island {
+    /// A greeting by the time of day, the date, and the next event of Google Calendar.
+    fn greeting(&self) -> Element<'_, Message> {
+        use chrono::Timelike;
+        let spacing = cosmic::theme::spacing();
+        let greeting = match self.now.hour() {
+            5..=10 => fl!("greeting-morning"),
+            11..=16 => fl!("greeting-day"),
+            17..=21 => fl!("greeting-evening"),
+            _ => fl!("greeting-night"),
+        };
+        let title = match user_first_name() {
+            Some(name) => format!("{greeting}, {name}"),
+            None => greeting,
+        };
+        let date = crate::modules::clock::format(&self.now, "%A %-d. %B", self.locale);
+        let mut row = widget::Row::new()
+            .push(
+                widget::Column::new()
+                    .push(widget::text::title3(title).font(cosmic::font::bold()))
+                    .push(secondary(date))
+                    .spacing(2)
+                    .width(Length::Fill),
+            )
+            .align_y(Alignment::Center);
+        if let Some(text) = self.next_event_text() {
+            row = row.push(
+                container(
+                    widget::Row::new()
+                        .push(widget::icon(crate::icons::calendar()).size(16))
+                        .push(
+                            widget::text::body(text)
+                                .font(cosmic::font::semibold())
+                                .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1))),
+                        )
+                        .spacing(spacing.space_xxs)
+                        .align_y(Alignment::Center),
+                )
+                .padding([spacing.space_xxs, spacing.space_s])
+                .max_width(300.0)
+                .class(cosmic::theme::Container::custom(|theme| {
+                    plate_style(theme, [theme.cosmic().radius_s()[0]; 4])
+                })),
+            );
+        }
+        container(row).padding([0, spacing.space_xxs]).into()
+    }
+
+    /// "Dentist · 14:30" for the next event, if Google Calendar shows one.
+    fn next_event_text(&self) -> Option<String> {
+        use crate::modules::google_calendar::When;
+        let event = self.next_event()?;
+        let today = self.now.date_naive();
+        let title = if event.title.is_empty() { "—".to_owned() } else { event.title.clone() };
+        let when = match event.start {
+            When::At(start) if start <= self.now => fl!("event-now"),
+            When::At(start) if start.date_naive() == today => start.format("%H:%M").to_string(),
+            When::At(start) => format!(
+                "{} {}",
+                crate::modules::clock::format(&start, "%a", self.locale),
+                start.format("%H:%M")
+            ),
+            When::Day(day) if day <= today => fl!("event-today"),
+            When::Day(day) => crate::modules::clock::format(
+                &day.and_hms_opt(12, 0, 0)?.and_utc(),
+                "%a",
+                self.locale,
+            ),
+        };
+        Some(format!("{title} · {when}"))
+    }
+}
+
+/// The user's first name, from the account's full name; the login name as a fallback.
+fn user_first_name() -> Option<String> {
+    static NAME: std::sync::LazyLock<Option<String>> = std::sync::LazyLock::new(|| {
+        // SAFETY: getuid has no preconditions.
+        let uid = unsafe { libc::getuid() };
+        let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
+        let from_passwd = passwd.lines().find_map(|line| {
+            let fields: Vec<&str> = line.split(':').collect();
+            (fields.get(2)?.parse::<u32>().ok()? == uid)
+                .then(|| fields.get(4).copied().unwrap_or_default().split(',').next().unwrap_or_default().to_owned())
+        });
+        let full = from_passwd.filter(|n| !n.trim().is_empty());
+        let name = full
+            .and_then(|n| n.split_whitespace().next().map(str::to_owned))
+            .or_else(|| {
+                std::env::var("USER").ok().map(|user| {
+                    let mut chars = user.chars();
+                    chars.next().map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
+                })
+            });
+        name.filter(|n| !n.is_empty())
+    });
+    NAME.clone()
 }
 
 impl Island {

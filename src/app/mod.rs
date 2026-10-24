@@ -1193,6 +1193,9 @@ impl Island {
                 || self.tab == Tab::Home
                 || (self.tab == Tab::Media && !lyrics_page));
         crate::modules::audio::set_shown(bars_shown);
+        crate::modules::system::set_gpu_shown(
+            self.tab == Tab::Home && self.state.expanded && self.config.shows_card(config::HomeCard::Gpu),
+        );
         crate::modules::system::set_detailed(
             self.tab == Tab::Home && self.state.expanded,
         );

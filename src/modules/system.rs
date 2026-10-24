@@ -252,6 +252,66 @@ pub fn cpu_temperature() -> Option<f32> {
     found.map(|(_, t)| t)
 }
 
+/// Which maker's driver reports the graphics card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Vendor {
+    Amd,
+    Intel,
+}
+
+/// A graphics card the kernel reports use of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GpuSource {
+    card: std::path::PathBuf,
+    vendor: Vendor,
+}
+
+/// What the home tab shows of the graphics card.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Gpu {
+    pub name: &'static str,
+    pub freq_mhz: Option<u32>,
+    /// Video memory used and in total, in bytes (discrete cards).
+    pub vram: Option<(u64, u64)>,
+    pub temperature: Option<f32>,
+}
+
+/// The first AMD or Intel card; others (NVIDIA's own driver) report nothing in sysfs.
+fn find_gpu() -> Option<GpuSource> {
+    let mut found: Vec<GpuSource> = Vec::new();
+    for entry in std::fs::read_dir("/sys/class/drm").ok()?.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        // card0, card1 … but not card1-DP-1 (its outputs).
+        if !name.starts_with("card") || name[4..].parse::<u32>().is_err() {
+            continue;
+        }
+        let card = entry.path();
+        let vendor = match std::fs::read_to_string(card.join("device/vendor")) {
+            Ok(v) if v.trim() == "0x1002" => Vendor::Amd,
+            Ok(v) if v.trim() == "0x8086" => Vendor::Intel,
+            _ => continue,
+        };
+        found.push(GpuSource { card, vendor });
+    }
+    // A discrete AMD card does the heavy work, if there is one.
+    found.sort_by_key(|g| (g.vendor != Vendor::Amd, g.card.clone()));
+    found.into_iter().next()
+}
+
+/// Share of time the card was busy, 0–1, from how long it rested (RC6) in `elapsed_ms`.
+pub fn busy_from_rc6(before_ms: u64, after_ms: u64, elapsed_ms: f64) -> f32 {
+    if elapsed_ms <= 0.0 {
+        return 0.0;
+    }
+    (1.0 - after_ms.saturating_sub(before_ms) as f64 / elapsed_ms).clamp(0.0, 1.0) as f32
+}
+
+fn gpu_temperature(device: &Path) -> Option<f32> {
+    let hwmon = std::fs::read_dir(device.join("hwmon")).ok()?.flatten().next()?.path();
+    read_number(&hwmon.join("temp1_input")).map(|m| m as f32 / 1000.0)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Charge {
     Charging,
@@ -306,6 +366,20 @@ pub fn uptime() -> Duration {
 static MONITOR: LazyLock<Mutex<Monitor>> = LazyLock::new(Default::default);
 /// The home tab is open: read everything, not just what the graphs need.
 static DETAILED: AtomicBool = AtomicBool::new(false);
+/// The home tab shows the graphics card: read it too.
+static GPU_SHOWN: AtomicBool = AtomicBool::new(false);
+
+static GPU_SOURCE: LazyLock<Option<GpuSource>> = LazyLock::new(find_gpu);
+
+/// Whether there is a graphics card the island can read.
+pub fn gpu_present() -> bool {
+    GPU_SOURCE.is_some()
+}
+
+/// Reads the graphics card only while the home tab shows it.
+pub fn set_gpu_shown(shown: bool) {
+    GPU_SHOWN.store(shown, Ordering::Relaxed);
+}
 
 /// Starts sampling in the background, once a second. The graphs need a sample
 /// every second to have a history when the tab opens, but those samples need
@@ -369,6 +443,11 @@ pub struct Monitor {
     pub disks: Vec<Disk>,
     pub battery: Option<Battery>,
     pub uptime: Duration,
+    gpu_before: Option<(u64, Instant)>,
+    /// The graphics card, if there is one the kernel reports on.
+    pub gpu: Option<Gpu>,
+    /// Graphics card use, 0–1, oldest first.
+    pub gpu_busy: VecDeque<f32>,
 }
 
 fn push<T>(history: &mut VecDeque<T>, value: T) {
@@ -408,6 +487,52 @@ impl Monitor {
             }
             self.net_before = Some((counters, now));
         }
+        if GPU_SHOWN.load(Ordering::Relaxed) {
+            self.sample_gpu(now);
+        } else {
+            // Resting: the first reading after it starts a new interval.
+            self.gpu_before = None;
+        }
+    }
+
+    fn sample_gpu(&mut self, now: Instant) {
+        let Some(GpuSource { card, vendor }) = GPU_SOURCE.clone() else {
+            return;
+        };
+        let device = card.join("device");
+        let busy = match vendor {
+            Vendor::Amd => read_number(&device.join("gpu_busy_percent")).map(|p| p as f32 / 100.0),
+            Vendor::Intel => {
+                let rc6 = read_number(&card.join("gt/gt0/rc6_residency_ms"));
+                let busy = match (rc6, self.gpu_before) {
+                    (Some(after), Some((before, at))) => Some(busy_from_rc6(
+                        before,
+                        after,
+                        now.duration_since(at).as_secs_f64() * 1000.0,
+                    )),
+                    _ => None,
+                };
+                self.gpu_before = rc6.map(|ms| (ms, now));
+                busy
+            }
+        };
+        if let Some(busy) = busy {
+            push(&mut self.gpu_busy, busy.clamp(0.0, 1.0));
+        }
+        let freq = match vendor {
+            Vendor::Intel => read_number(&card.join("gt_act_freq_mhz")),
+            Vendor::Amd => None,
+        };
+        self.gpu = Some(Gpu {
+            name: match vendor {
+                Vendor::Amd => "AMD",
+                Vendor::Intel => "Intel",
+            },
+            freq_mhz: freq.map(|f| f as u32),
+            vram: read_number(&device.join("mem_info_vram_used"))
+                .zip(read_number(&device.join("mem_info_vram_total"))),
+            temperature: gpu_temperature(&device),
+        });
     }
 
     /// Reads the rest. Disks, battery and temperature change slowly and are
@@ -539,6 +664,14 @@ mod tests {
         assert_eq!(format_bytes(7_812_000_000.0, cs), "7,8 GB");
         assert_eq!(format_bytes(256_000_000_000.0, cs), "256 GB");
         assert_eq!(format_bytes(1_500.0, chrono::Locale::en_US), "1.5 kB");
+    }
+
+    #[test]
+    fn gpu_busy_from_rest_time() {
+        // Rested 730 ms of 1000 ms: busy 27 %.
+        assert!((busy_from_rc6(6_000, 6_730, 1000.0) - 0.27).abs() < 1e-4);
+        assert_eq!(busy_from_rc6(6_000, 7_500, 1000.0), 0.0);
+        assert_eq!(busy_from_rc6(6_000, 6_000, 0.0), 0.0);
     }
 
     #[test]

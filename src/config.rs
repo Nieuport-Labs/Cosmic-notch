@@ -18,6 +18,28 @@ pub enum Section {
     Tasks,
 }
 
+/// Cards of the home page that the user can hide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HomeCard {
+    Greeting,
+    Cpu,
+    Gpu,
+    Network,
+    Player,
+    Storage,
+}
+
+impl HomeCard {
+    pub const ALL: [HomeCard; 6] = [
+        HomeCard::Greeting,
+        HomeCard::Cpu,
+        HomeCard::Gpu,
+        HomeCard::Network,
+        HomeCard::Player,
+        HomeCard::Storage,
+    ];
+}
+
 impl Section {
     pub const ALL: [Section; 5] = [
         Section::Home,
@@ -46,6 +68,8 @@ pub struct IslandConfig {
     pub lyrics: bool,
     /// Sections left out of the expanded island; at least one always stays.
     pub hidden_sections: Vec<Section>,
+    /// Cards left out of the home page.
+    pub hidden_cards: Vec<HomeCard>,
     /// Keep the tasks in step with Google Tasks, through GNOME Online Accounts.
     pub google_tasks: bool,
     /// Show and add events of Google Calendar, through GNOME Online Accounts.
@@ -57,6 +81,10 @@ pub struct IslandConfig {
 impl IslandConfig {
     pub fn shows(&self, section: Section) -> bool {
         !self.hidden_sections.contains(&section)
+    }
+
+    pub fn shows_card(&self, card: HomeCard) -> bool {
+        !self.hidden_cards.contains(&card)
     }
 }
 
@@ -73,6 +101,7 @@ impl Default for IslandConfig {
             // Sends what plays to a third party: only when the user asks for it.
             lyrics: false,
             hidden_sections: Vec::new(),
+            hidden_cards: Vec::new(),
             google_tasks: false,
             google_calendar: false,
             reduce_motion: false,
