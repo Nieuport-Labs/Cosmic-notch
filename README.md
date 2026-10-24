@@ -6,22 +6,22 @@ English · [Česky](README.cs.md)
 
 ![The home page](res/screenshots/home.png)
 
-A Dynamic Island for the COSMIC desktop (Pop!_OS 24.04). The island is a **panel applet**: add it
-anywhere in a panel, at the top, bottom or a side, and the other applets make room for it. It
-- at rest shows the date and time,
+A Dynamic Island for the COSMIC desktop (Pop!_OS 24.04). The island sits **over the top panel**:
+- at rest it shows the date and time,
 - while something plays, it adds the cover, "artist – title" and bars that follow the sound,
-- opens, when you point at it, into a home page, media controls, a shelf for files, a calendar and a
+- point at it and it opens into a home page, media controls, a shelf for files, a calendar and a
   to-do list.
 
 It follows your COSMIC theme: interface font, accent color, light/dark mode, transparency, frosted
-glass and corner radius. Changes in COSMIC Settings show up right away. It goes away with the panel
-in fullscreen videos and games. The settings have a mode without animations.
+glass and corner radius. Changes in COSMIC Settings show up right away. It steps aside for
+fullscreen videos and games. The settings have a solid background and a mode without animations.
 
 ## Parts
 
 | Binary | What it does |
 | --- | --- |
-| `cosmic-ext-island-applet` | The island. The compact island is the applet itself, so the panel places it among the other applets; the expanded island is a popup that grows out of it. It also watches the clipboard (when its history is on) on the unrestricted connection the panel gives its applets, which works in a Flatpak too. |
+| `cosmic-ext-island-applet` | The panel applet. Keeps room in the middle of the panel as wide as the island, so other applets are not hidden under it, and starts the island. |
+| `cosmic-ext-island` | The island itself. Started by the applet on the connection to the compositor that the panel gives its applets, so it may draw over the panel, also as a Flatpak. Puts one layer surface over the panel on each display. |
 
 ## Install
 
@@ -49,8 +49,9 @@ A Debian package ends up in `target/debian`:
 just deb
 ```
 
-Then add the *Dynamic Island* applet to a panel in **Settings → Desktop → Panel → Applets**,
-wherever you like. The date and time applet can go: the island shows both.
+Then add the *Dynamic Island* applet to the **middle** of the panel in **Settings → Desktop →
+Panel → Applets**. The applet starts the island. The date and time applet can go: the island shows
+both.
 
 Uninstall with `just uninstall` (or `sudo just prefix=/usr uninstall`).
 
@@ -97,8 +98,8 @@ folder to submit to that repository, with the manifest pointing at the pushed co
     `~/.local/share/cosmic-ext-island/snippets` and removed once no shelf holds them.
   - **Clipboard history**: switch it on in the settings and the first shelf, *Clipboard*, keeps the
     last 50 things you copied (text, images, files); a click copies one back. What password
-    managers copy is never kept. It needs the compositor to allow clipboard access, which the
-    panel's unrestricted connection does.
+    managers copy is never kept. It needs clipboard access, which a Flatpak's sandbox doesn't
+    give.
   - **Send to a device**: the send icon lists devices nearby, each with the protocol it is reached
     over. The island speaks the [LocalSend](https://localsend.org) protocol (v2) itself; the other
     device only needs the LocalSend app open. Paired KDE Connect devices show up there too.
@@ -130,6 +131,13 @@ password.
 New, renamed, ticked and deleted tasks go to Google right away. Google's list is fetched when the
 Tasks tab opens, every minute while it is open, and every 10 minutes otherwise.
 
+## Weather
+
+Switch on **Show the weather** in the settings, type a city and press Enter. The temperature then
+shows next to the time (unless you switch that off) and the home page has the weather with today's
+high and low. It comes from [Open-Meteo](https://open-meteo.com), which gets the coordinates of the
+city, every 30 minutes.
+
 ## Google Calendar
 
 With **Google Calendar events** switched on in the settings, the calendar tab shows the events of
@@ -142,8 +150,11 @@ minutes otherwise.
 
 The gear in the open island shows the settings inside the island:
 - which sections the island has (home, media, shelf, calendar, tasks); the last one can't be switched off,
+- which displays show the island (same as the panel, all, the active one, selected ones),
 - the clock format (empty follows the COSMIC Time applet),
-- the delays before opening and closing, and a mode without animations,
+- the delays before opening and closing, hiding behind fullscreen windows, a solid background
+  and a mode without animations,
+- the weather (a city, and whether it shows next to the time),
 - what the compact island shows,
 - which cards the home page has,
 - the clipboard history,
@@ -153,13 +164,19 @@ Settings are stored with cosmic-config under `io.github.jiricepelka.CosmicExtIsl
 
 ## Development
 
-The island runs inside the panel, so install it (`just install`) and reload the applet. For
-screenshots, `COSMIC_EXT_ISLAND_EXPAND=home|media|shelf|calendar|tasks|settings` starts it open on
-that tab, and `COSMIC_EXT_ISLAND_LYRICS=1` on the lyrics page. A D-Bus call opens and closes it:
+```bash
+just run
+```
+
+`--expand[=home|media|shelf|calendar|tasks|settings]` starts the island open on that tab, which is
+handy for screenshots:
 
 ```bash
-busctl --user call io.github.jiricepelka.CosmicExtIsland /io/github/jiricepelka/CosmicExtIsland io.github.jiricepelka.CosmicExtIsland Toggle
+just run --expand=calendar
 ```
+
+`--lyrics` starts on the lyrics page.
+
 
 The opening animation follows [Boring Notch](https://boringnotch.com/): a spring (response 0.42 s,
 damping 0.8) when opening and no overshoot (damping 1.0) when closing; the content fades and grows

@@ -2,10 +2,11 @@
 
 ## 0.2.0 – 2026-10-24
 
-- **The island is the panel applet.** It can sit anywhere in any panel, also at the bottom or a
-  side, and the other applets make room for it. The expanded island is a popup that grows out of
-  it. The separate island program, the settings for displays and the fullscreen setting are gone;
-  the panel hides the island with itself in fullscreen.
+- Weather from Open-Meteo for a city you pick (off by default): next to the time and on the home
+  page.
+- A click outside an island opened with a click closes it.
+- Switching tabs slides the new one in from its side.
+- An option for a solid background instead of the theme's transparency.
 - Google Calendar: events on the calendar tab and a form to add one, and the next event on the
   home page.
 - Home page: more room, a greeting by the time of day, a graphics card (AMD, Intel) and a choice of

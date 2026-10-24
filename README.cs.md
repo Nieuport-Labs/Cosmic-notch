@@ -6,8 +6,7 @@
 
 ![Domovská stránka](res/screenshots/home.png)
 
-Dynamic Island pro desktop COSMIC (Pop!_OS 24.04). Ostrov je **applet panelu**: přidej ho kamkoli
-do libovolného panelu, nahoře, dole i po straně, a ostatní applety mu udělají místo. Ostrov
+Dynamic Island pro desktop COSMIC (Pop!_OS 24.04). Ostrov sedí **přes horní panel**:
 - v klidu ukazuje datum a čas,
 - při přehrávání obal, „interpret – skladba“ a pruhy,
 - po najetí myší se rozbalí na domovskou stránku, média, přihrádku souborů, kalendář a úkoly.
@@ -19,7 +18,8 @@ ledové sklo (frosted) a zaoblení. Změny v Nastavení COSMIC se projeví okam�
 
 | Binárka | Co dělá |
 | --- | --- |
-| `cosmic-ext-island-applet` | Samotný ostrov. Kompaktní ostrov je přímo applet, takže ho panel řadí mezi ostatní applety; rozbalený ostrov je popup, který z něj vyroste. Když je zapnutá historie schránky, sleduje ji na neomezeném spojení, které panel appletům dává (funguje i ve Flatpaku). |
+| `cosmic-ext-island-applet` | Applet do středu panelu. Drží v panelu místo široké jako ostrov, aby se pod něj nedostaly jiné applety, a spouští ostrov. |
+| `cosmic-ext-island` | Samotný ostrov. Spouští ho applet na spojení s kompozitorem, které panel appletům dává, takže smí kreslit přes panel, i jako Flatpak. Na každém monitoru vytvoří jednu layer-surface nad panelem. |
 
 ## Sestavení a spuštění z repozitáře
 
@@ -27,14 +27,21 @@ ledové sklo (frosted) a zaoblení. Změny v Nastavení COSMIC se projeví okam�
 sudo apt install just
 ```
 
-Ostrov běží uvnitř panelu, takže ho nainstaluj (`just install`) a applet znovu načti. Pro snímky
-obrazovky spustí `COSMIC_EXT_ISLAND_EXPAND=home|media|shelf|calendar|tasks|settings` ostrov rovnou
-rozbalený na dané záložce a `COSMIC_EXT_ISLAND_LYRICS=1` na stránce s texty. Otevřít a zavřít ho jde
-i voláním D-Bus:
+```bash
+just run
+```
+
+Volby pro vývoj a snímky obrazovky:
+
+- `--expand[=home|media|shelf|calendar|tasks]` spustí ostrov rovnou rozbalený.
+- `--expand=settings` otevře rovnou nastavení.
 
 ```bash
-busctl --user call io.github.jiricepelka.CosmicExtIsland /io/github/jiricepelka/CosmicExtIsland io.github.jiricepelka.CosmicExtIsland Toggle
+just run --expand=calendar
 ```
+
+`--lyrics` spustí stránku s texty.
+
 
 Animace otevírání napodobuje [Boring Notch](https://boringnotch.com/): pružina (response 0,42 s,
 tlumení 0,8) při otevírání, bez překmitu (tlumení 1,0) při zavírání, obsah se prolne a zvětší od horního okraje.
@@ -50,8 +57,8 @@ Nainstaluje se do `~/.local` (bez sudo).
 Systémová instalace (pro všechny uživatele): `just build-release && sudo just prefix=/usr install`.
 Balík `.deb`: `just deb`, výsledek je v `target/debian`.
 
-Pak v **Nastavení → Plocha → Panel → Applety** přidej applet *Dynamický ostrov* do panelu, kam
-chceš. Applet s datem a časem můžeš odebrat, ostrov ukazuje datum a čas sám.
+Pak v **Nastavení → Plocha → Panel → Applety** přidej applet *Dynamický ostrov* do **středu**
+panelu. Applet ostrov spustí. Applet s datem a časem můžeš odebrat, ostrov ukazuje datum a čas sám.
 
 ### Flatpak
 
@@ -86,8 +93,7 @@ Odinstalace: `just uninstall`.
   skončí v ní. Vyprázdnění a odeslání jsou ikony v horní liště.
 - **Historie schránky**: po zapnutí v nastavení drží první přihrádka *Schránka* posledních 50
   kopií (text, obrázky, soubory); kliknutím se kopie vrátí do schránky. Co kopírují správci hesel,
-  se neukládá. Potřebuje, aby kompozitor povolil přístup ke schránce, což neomezené spojení panelu
-  umožňuje.
+  se neukládá. Potřebuje přístup ke schránce, který sandbox Flatpaku nedává.
 - **Schránka a text**: v otevřené přihrádce **Ctrl+V** (nebo ikona schránky v liště) vloží, co je ve
   schránce: zkopírované soubory, obrázek (uloží se jako PNG) nebo text. Text jde do přihrádky i
   přetáhnout, třeba označený v prohlížeči. Z textu je kartička s náhledem; vytažením do editoru se
@@ -136,6 +142,12 @@ Nové, přejmenované, odškrtnuté a smazané úkoly jdou do Googlu hned. Sezna
 při otevření záložky Úkoly, každou minutu, dokud je otevřená, a jinak jednou za 10 minut. Úkoly vytvořené bez připojení se nahrají při další
 synchronizaci.
 
+## Počasí
+
+V nastavení zapni **Ukazovat počasí**, napiš město a stiskni Enter. Teplota se pak ukáže vedle času
+(jde vypnout) a domovská stránka má počasí s dnešním maximem a minimem. Údaje jsou z
+[Open-Meteo](https://open-meteo.com), které každých 30 minut dostane souřadnice města.
+
 ## Google Kalendář
 
 Po zapnutí **Události z Google Kalendáře** v nastavení se v záložce Kalendář ukážou události
@@ -148,8 +160,11 @@ dokud je otevřená, a jinak jednou za 15 minut.
 
 Ozubené kolo v rozbaleném ostrově přepne na stránku nastavení přímo v ostrově:
 - které části ostrov má (domů, média, přihrádka, kalendář, úkoly); poslední zapnutá vypnout nejde,
+- na kterých monitorech se ostrov zobrazí (stejně jako panel, všechny, aktivní, vybrané),
 - formát hodin (prázdné = podle appletu Čas v COSMICu),
-- prodlevy rozbalení a sbalení a režim bez animací,
+- prodlevy rozbalení a sbalení, skrytí za oknem přes celou obrazovku, plné pozadí a režim bez
+  animací,
+- počasí (město a jestli se ukazuje i vedle času),
 - co ukazovat v kompaktním stavu,
 - které karty má domovská stránka,
 - historii schránky,
