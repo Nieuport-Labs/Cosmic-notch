@@ -3,7 +3,6 @@
 //! The home tab: how busy the computer is.
 
 use std::collections::VecDeque;
-use std::time::Duration;
 
 use cosmic::iced::advanced::text::{Ellipsize, EllipsizeHeightLimit};
 use cosmic::iced::{Alignment, Color, Length};
@@ -15,7 +14,7 @@ use super::{Island, Message};
 use crate::config::HomeCard;
 use crate::fl;
 use crate::island::fade::faded;
-use crate::modules::system::{self, Charge, Disk};
+use crate::modules::system::{self, Disk};
 
 const GRAPH_HEIGHT: f32 = 36.0;
 /// Cover of the mini player.
@@ -55,41 +54,26 @@ impl Island {
         // Network: download above the middle line, upload below it.
         let rx = monitor.rx.back().copied().unwrap_or(0.0);
         let tx = monitor.tx.back().copied().unwrap_or(0.0);
-        let peak = monitor
-            .rx
-            .iter()
-            .chain(&monitor.tx)
-            .copied()
-            .fold(10_000.0, f64::max);
-        let rx_history: VecDeque<f32> = monitor.rx.iter().map(|v| (v / peak) as f32).collect();
-        let tx_history: VecDeque<f32> = monitor.tx.iter().map(|v| (v / peak) as f32).collect();
         let rate = |icon: &'static str, value: f64| {
             widget::Row::new()
-                .push(widget::icon(crate::icons::named(icon)).size(16))
-                .push(widget::text::body(format!(
-                    "{}/s",
-                    system::format_bytes(value, locale)
-                )))
-                .spacing(spacing.space_xxxs)
+                .push(widget::icon(crate::icons::named(icon)).size(14))
+                .push(secondary(format!("{}/s", system::format_bytes(value, locale))))
+                .spacing(2)
                 .align_y(Alignment::Center)
         };
-        let network = card(
+        // Network and weather take one line each, next to memory and disks.
+        let line = |name: String, side: Element<'static, Message>| {
+            widget::Row::new()
+                .push(widget::text::body(name).width(Length::Fill))
+                .push(side)
+                .align_y(Alignment::Center)
+        };
+        let network = line(
             fl!("network"),
-            widget::Space::new().into(),
-            widget::Column::new()
-                .push(
-                    widget::Column::new()
-                        .push(rate("go-down-symbolic", rx))
-                        .push(rate("go-up-symbolic", tx))
-                        .spacing(2),
-                )
-                .push(
-                    widget::Column::new()
-                        .push(graph(&rx_history, 1.0, GRAPH_HEIGHT / 3.0, false))
-                        .push(graph(&tx_history, 1.0, GRAPH_HEIGHT / 3.0, true))
-                        .spacing(1),
-                )
-                .spacing(spacing.space_xxs)
+            widget::Row::new()
+                .push(rate("go-down-symbolic", rx))
+                .push(rate("go-up-symbolic", tx))
+                .spacing(spacing.space_xs)
                 .into(),
         );
 
@@ -142,8 +126,9 @@ impl Island {
                 .spacing(2)
         };
         let memory_share = share(memory.used(), memory.total);
-        let mut usage_body = widget::Column::new()
-            .push(usage(
+        let mut usage_body = widget::Column::new().spacing(spacing.space_xs);
+        if self.config.shows_card(HomeCard::Storage) {
+            usage_body = usage_body.push(usage(
                 fl!("memory"),
                 format!(
                     "{} · {}",
@@ -151,14 +136,17 @@ impl Island {
                     percent(memory_share)
                 ),
                 memory_share,
-            ))
-            .spacing(spacing.space_xs);
-        for disk in monitor.disks.iter().take(2) {
-            usage_body = usage_body.push(usage(
-                disk_name(disk),
-                fl!("free", free = bytes(disk.available)),
-                share(disk.used(), disk.total),
             ));
+            for disk in monitor.disks.iter().take(2) {
+                usage_body = usage_body.push(usage(
+                    disk_name(disk),
+                    fl!("free", free = bytes(disk.available)),
+                    share(disk.used(), disk.total),
+                ));
+            }
+        }
+        if self.config.shows_card(HomeCard::Network) {
+            usage_body = usage_body.push(network);
         }
         let usage = small_card(usage_body.into());
 
@@ -168,32 +156,11 @@ impl Island {
         {
             second_row = second_row.push(player);
         }
-        let has_usage = self.config.shows_card(HomeCard::Storage);
+        let has_usage = self.config.shows_card(HomeCard::Storage)
+            || self.config.shows_card(HomeCard::Network);
         if has_usage {
             second_row = second_row.push(usage);
         }
-
-        // Battery and uptime below the cards.
-        let mut footer = widget::Row::new()
-            .spacing(spacing.space_s)
-            .align_y(Alignment::Center);
-        if let Some(battery) = monitor.battery {
-            let state = match battery.charge {
-                Charge::Charging => fl!("battery-charging"),
-                Charge::Discharging => fl!("battery-discharging"),
-                Charge::Full => fl!("battery-full"),
-            };
-            footer = footer.push(
-                widget::Row::new()
-                    .push(widget::icon(widget::icon::from_name(battery_icon(battery)).symbolic(true).handle()).size(16))
-                    .push(widget::text::caption(format!("{} % · {state}", battery.percent)))
-                    .spacing(spacing.space_xxxs)
-                    .align_y(Alignment::Center),
-            );
-        }
-        footer = footer
-            .push(widget::Space::new().width(Length::Fill))
-            .push(secondary(fl!("uptime", time = format_uptime(monitor.uptime))));
 
         // The figures side by side, with room and a hairline between them.
         let mut figures: Vec<Element<'_, Message>> = Vec::new();
@@ -203,9 +170,6 @@ impl Island {
         if let Some(gpu) = gpu {
             figures.push(gpu);
         }
-        if self.config.shows_card(HomeCard::Network) {
-            figures.push(network);
-        }
         let has_cards = !figures.is_empty();
         let mut cards = widget::Row::new().spacing(spacing.space_m);
         for (i, figure) in figures.into_iter().enumerate() {
@@ -213,14 +177,14 @@ impl Island {
                 cards = cards.push(
                     container(widget::Space::new())
                         .width(Length::Fixed(1.0))
-                        .height(Length::Fixed(96.0))
+                        .height(Length::Fixed(84.0))
                         .class(cosmic::theme::Container::custom(|theme| plate_style(theme, [0.0; 4]))),
                 );
             }
             cards = cards.push(figure);
         }
 
-        let mut page = widget::Column::new().spacing(spacing.space_m).padding([spacing.space_xxs, spacing.space_xs]);
+        let mut page = widget::Column::new().spacing(spacing.space_s).padding([spacing.space_xxs, spacing.space_xs]);
         if self.config.shows_card(HomeCard::Greeting) {
             page = page.push(self.greeting());
         }
@@ -230,7 +194,7 @@ impl Island {
         if self.config.shows_card(HomeCard::Player) && self.media.is_some() || has_usage {
             page = page.push(second_row);
         }
-        page.push(footer).into()
+        page.into()
     }
 }
 
@@ -257,30 +221,28 @@ impl Island {
                     .width(Length::Fill),
             )
             .align_y(Alignment::Center);
-        if let Some(weather) = self.shown_weather() {
+        // The weather faces the greeting, on one line no taller than it.
+        if let Some(w) = self.shown_weather() {
             use crate::modules::weather;
             row = row.push(
                 widget::Row::new()
-                    .push(widget::icon(crate::icons::named(weather::icon(weather.code, weather.day))).size(28))
+                    .push(widget::icon(crate::icons::named(weather::icon(w.code, w.day))).size(20))
                     .push(
-                        widget::Column::new()
-                            .push(
-                                widget::text::title4(weather::format_temperature(weather.temperature))
-                                    .font(cosmic::font::bold()),
-                            )
-                            .push(secondary(format!(
-                                "{} · {} / {}",
-                                crate::i18n::LANGUAGE_LOADER.get(weather::kind(weather.code)),
-                                weather::format_temperature(weather.high),
-                                weather::format_temperature(weather.low),
-                            ))),
+                        widget::text::heading(weather::format_temperature(w.temperature))
+                            .font(cosmic::font::bold()),
                     )
-                    .spacing(spacing.space_xs)
+                    .push(secondary(format!(
+                        "{} · {} / {}",
+                        crate::i18n::LANGUAGE_LOADER.get(weather::kind(w.code)),
+                        weather::format_temperature(w.high),
+                        weather::format_temperature(w.low),
+                    )))
+                    .spacing(spacing.space_xxs)
                     .align_y(Alignment::Center),
             );
-            row = row.push(widget::Space::new().width(Length::Fixed(f32::from(spacing.space_m))));
         }
         if let Some(text) = self.next_event_text() {
+            row = row.push(widget::Space::new().width(Length::Fixed(f32::from(spacing.space_m))));
             row = row.push(
                 container(
                     widget::Row::new()
@@ -314,14 +276,14 @@ impl Island {
             When::At(start) if start.date_naive() == today => start.format("%H:%M").to_string(),
             When::At(start) => format!(
                 "{} {}",
-                crate::modules::clock::format(&start, "%a", self.locale),
+                crate::modules::clock::format(&start, "%a", self.language),
                 start.format("%H:%M")
             ),
             When::Day(day) if day <= today => fl!("event-today"),
             When::Day(day) => crate::modules::clock::format(
                 &day.and_hms_opt(12, 0, 0)?.and_utc(),
                 "%a",
-                self.locale,
+                self.language,
             ),
         };
         Some(format!("{title} · {when}"))
@@ -579,39 +541,5 @@ fn disk_name(disk: &Disk) -> String {
         "/" => fl!("disk-system"),
         "/home" => fl!("disk-home"),
         mount => mount.rsplit('/').next().unwrap_or(mount).to_string(),
-    }
-}
-
-fn battery_icon(battery: system::Battery) -> String {
-    let level = (u32::from(battery.percent) + 5) / 10 * 10;
-    match battery.charge {
-        Charge::Discharging => format!("battery-level-{level}-symbolic"),
-        Charge::Charging | Charge::Full if level == 100 => "battery-level-100-charged-symbolic".into(),
-        Charge::Charging | Charge::Full => format!("battery-level-{level}-charging-symbolic"),
-    }
-}
-
-/// "45 min", "3 h 12 min", "2 d 4 h".
-fn format_uptime(uptime: Duration) -> String {
-    let minutes = uptime.as_secs() / 60;
-    let (days, hours, minutes) = (minutes / 1440, minutes / 60 % 24, minutes % 60);
-    if days > 0 {
-        format!("{days} d {hours} h")
-    } else if hours > 0 {
-        format!("{hours} h {minutes} min")
-    } else {
-        format!("{minutes} min")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn uptime_text() {
-        assert_eq!(format_uptime(Duration::from_secs(45 * 60 + 30)), "45 min");
-        assert_eq!(format_uptime(Duration::from_secs(3 * 3600 + 12 * 60)), "3 h 12 min");
-        assert_eq!(format_uptime(Duration::from_secs(2 * 86400 + 4 * 3600)), "2 d 4 h");
     }
 }

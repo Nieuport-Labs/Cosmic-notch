@@ -566,7 +566,6 @@ impl Monitor {
         if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
             self.memory = parse_meminfo(&meminfo);
         }
-        self.uptime = uptime();
         self.frequency = cpu_frequency();
 
         if self
@@ -577,7 +576,6 @@ impl Monitor {
             self.cores = std::thread::available_parallelism().map_or(1, |n| n.get());
             self.temperature = cpu_temperature();
             self.disks = disks();
-            self.battery = battery();
         }
     }
 

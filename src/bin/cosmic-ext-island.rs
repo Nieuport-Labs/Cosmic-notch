@@ -19,7 +19,6 @@ fn main() -> cosmic::iced::Result {
             "--expand=home" => flags.expand = Some(Tab::Home),
             "--expand=tasks" => flags.expand = Some(Tab::Tasks),
             "--expand=settings" => flags.expand = Some(Tab::Settings),
-            "--lyrics" => flags.lyrics = true,
             "--help" | "-h" => {
                 println!("Usage: cosmic-ext-island [--expand[=media|shelf|calendar|settings]]");
                 return Ok(());

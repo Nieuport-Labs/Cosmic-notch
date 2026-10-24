@@ -175,8 +175,6 @@ handy for screenshots:
 just run --expand=calendar
 ```
 
-`--lyrics` starts on the lyrics page.
-
 
 The opening animation follows [Boring Notch](https://boringnotch.com/): a spring (response 0.42 s,
 damping 0.8) when opening and no overshoot (damping 1.0) when closing; the content fades and grows

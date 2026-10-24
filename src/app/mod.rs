@@ -45,8 +45,6 @@ use crate::modules::shelf::{self, Clip, ShareTarget, UriList};
 pub struct Flags {
     /// Start expanded and pinned on this tab.
     pub expand: Option<Tab>,
-    /// Show the lyrics page of the media tab.
-    pub lyrics: bool,
 }
 
 pub fn run(flags: Flags) -> cosmic::iced::Result {
@@ -162,7 +160,10 @@ pub struct Island {
     config: IslandConfig,
     config_handle: Option<cosmic_config::Config>,
     time_config: TimeAppletConfig,
+    /// The region: how dates and numbers are written.
     locale: Locale,
+    /// The desktop's language: names of days and months.
+    language: Locale,
     now: DateTime<Local>,
     panel: PanelGeometry,
     outputs: Vec<OutputEntry>,
@@ -359,6 +360,7 @@ impl cosmic::Application for Island {
             time_config: config::load(config::TIME_APPLET_ID, 1),
             panel: PanelGeometry::load(),
             locale: clock::system_locale(),
+            language: clock::language_locale(),
             now: Local::now(),
             outputs: Vec::new(),
             surfaces: HashMap::new(),
@@ -384,7 +386,7 @@ impl cosmic::Application for Island {
             share_page: false,
             devices: Vec::new(),
             sends: HashMap::new(),
-            lyrics_view: flags.lyrics,
+            lyrics_view: false,
             lyrics: None,
             copied: None,
             todos: Default::default(),
@@ -1245,6 +1247,18 @@ impl cosmic::Application for Island {
 }
 
 impl Island {
+    /// Whether the media tab shows the lyrics page: the microphone switched it on,
+    /// and the track has lyrics (or they are being looked up).
+    pub(super) fn lyrics_page(&self) -> bool {
+        use crate::modules::lyrics::Lyrics;
+        self.lyrics_view
+            && self.config.lyrics
+            && matches!(
+                self.lyrics.as_ref().map(|(_, l)| l),
+                Some(None | Some(Lyrics::Synced(_) | Lyrics::Plain(_)))
+            )
+    }
+
     /// Whether the bars next to the track are drawn: they are animation.
     fn bars_enabled(&self) -> bool {
         self.config.show_bars && !self.config.reduce_motion
@@ -1278,7 +1292,7 @@ impl Island {
     }
 
     fn clock_text(&self) -> String {
-        clock::format(&self.now, &self.clock_format(), self.locale)
+        clock::format(&self.now, &self.clock_format(), self.language)
     }
 
     /// Tells the background workers what is on screen, so they only wake the
@@ -1288,7 +1302,7 @@ impl Island {
             .media
             .as_ref()
             .is_some_and(|m| m.status == media::Status::Playing);
-        let lyrics_page = self.lyrics_view && self.config.lyrics;
+        let lyrics_page = self.lyrics_page();
         let bars_shown = playing
             && self.bars_enabled()
             && self.surfaces.values().any(|s| {

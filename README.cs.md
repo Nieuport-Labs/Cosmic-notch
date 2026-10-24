@@ -40,8 +40,6 @@ Volby pro vývoj a snímky obrazovky:
 just run --expand=calendar
 ```
 
-`--lyrics` spustí stránku s texty.
-
 
 Animace otevírání napodobuje [Boring Notch](https://boringnotch.com/): pružina (response 0,42 s,
 tlumení 0,8) při otevírání, bez překmitu (tlumení 1,0) při zavírání, obsah se prolne a zvětší od horního okraje.

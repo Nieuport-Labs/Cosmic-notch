@@ -14,6 +14,41 @@ pub fn system_locale() -> Locale {
         .unwrap_or(Locale::POSIX)
 }
 
+/// The locale of the desktop's language, for the names of days and months, so
+/// they match the rest of the text (the format follows [`system_locale`], the region).
+pub fn language_locale() -> Locale {
+    let language = std::env::var("LANGUAGE")
+        .ok()
+        .and_then(|l| l.split(':').next().map(str::to_owned));
+    let from = |v: String| -> Option<Locale> {
+        if v.is_empty() || v == "C" || v == "POSIX" {
+            return None;
+        }
+        let tag = v.split(['.', '@']).next().unwrap_or_default().to_owned();
+        Locale::try_from(tag.as_str()).ok().or_else(|| {
+            // A bare language ("en", "cs"): its main country.
+            let full = match tag.as_str() {
+                "en" => "en_US",
+                "cs" => "cs_CZ",
+                "sk" => "sk_SK",
+                "de" => "de_DE",
+                "pl" => "pl_PL",
+                "fr" => "fr_FR",
+                "es" => "es_ES",
+                _ => return None,
+            };
+            Locale::try_from(full).ok()
+        })
+    };
+    ["LC_ALL", "LC_MESSAGES"]
+        .iter()
+        .filter_map(|var| std::env::var(var).ok())
+        .chain(language)
+        .chain(std::env::var("LANG").ok())
+        .find_map(from)
+        .unwrap_or_else(system_locale)
+}
+
 /// Default format of the compact clock, e.g. `so 17. 10. 18:26` in Czech.
 pub fn default_format(locale: Locale, military_time: bool, show_seconds: bool) -> String {
     let lang = format!("{locale:?}");

@@ -216,7 +216,7 @@ impl Island {
         };
         let spacing = cosmic::theme::spacing();
 
-        if self.lyrics_view && self.config.lyrics {
+        if self.lyrics_page() {
             // The lyrics get the room: the cover and the track on the left, the
             // song on the right, running through the middle of the page.
             let side = widget::Column::new()
@@ -246,51 +246,92 @@ impl Island {
                 .into();
         }
 
-        // Cover on the left; title, artist and album beside it, and the lines
-        // being sung at the bottom, so the space next to the cover is used.
-        const COVER: f32 = 160.0;
+        // Compact: the cover with the track beside it, and one row with the
+        // controls, the progress and the lyrics button.
+        const COVER: f32 = 96.0;
         let mut title_row = widget::Row::new()
             .push(
-                widget::text::title3(media.title.clone())
-                    .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(2)))
+                widget::text::title4(media.title.clone())
+                    .font(cosmic::font::bold())
+                    .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1)))
                     .width(Length::Fill),
             )
-            .spacing(spacing.space_xs);
+            .spacing(spacing.space_xs)
+            .align_y(Alignment::Center);
         if media.status == Status::Playing && self.bars_enabled() {
-            title_row = title_row.push(self.bars(20.0));
+            title_row = title_row.push(self.bars(18.0));
         }
-        let mut details = widget::Column::new()
+        let mut artist = media.artists.clone();
+        if let Some(album) = &media.album
+            && !album.is_empty()
+            && *album != media.title
+        {
+            artist = format!("{artist} · {album}");
+        }
+        let details = widget::Column::new()
             .push(title_row)
             .push(
-                widget::text::body(media.artists.clone())
+                widget::text::body(artist)
                     .font(cosmic::font::semibold())
+                    .class(cosmic::theme::Text::Custom(secondary_text))
                     .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1))),
             )
+            .push(widget::Space::new().height(Length::Fill))
+            .push(self.lyrics_snippet(media))
             .spacing(spacing.space_xxxs)
             .width(Length::Fill)
             .height(Length::Fixed(COVER));
-        if let Some(album) = &media.album {
-            details = details.push(
-                widget::text::caption(album.clone())
-                    .class(cosmic::theme::Text::Custom(secondary_text))
-                    .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1))),
-            );
-        }
-        details = details
-            .push(widget::Space::new().height(Length::Fill))
-            .push(self.lyrics_snippet(media));
-
-        let info = widget::Row::new()
-            .push(self.cover(COVER, false, opacity))
-            .push(details)
-            .spacing(spacing.space_s);
 
         widget::Column::new()
-            .push(info)
-            .push(self.progress(media))
-            .push(self.media_controls(media))
-            .spacing(spacing.space_s)
+            .push(
+                widget::Row::new()
+                    .push(self.cover(COVER, false, opacity))
+                    .push(details)
+                    .spacing(spacing.space_s),
+            )
+            .push(self.compact_controls(media))
+            .spacing(spacing.space_xs)
             .into()
+    }
+
+    /// Previous, play and next, the progress, and the lyrics button, in one row.
+    fn compact_controls(&self, media: &MediaState) -> Element<'_, Message> {
+        let spacing = cosmic::theme::spacing();
+        let button = |icon: &'static str, command: Option<media::Command>| {
+            island_button_sized(icons::named(icon), false, command.map(Message::MediaCommand), 20)
+        };
+        let mut row = widget::Row::new()
+            .push(button(
+                "media-skip-backward-symbolic",
+                media.can_go_previous.then_some(media::Command::Previous),
+            ))
+            .push(button(
+                if media.status == Status::Playing {
+                    "media-playback-pause-symbolic"
+                } else {
+                    "media-playback-start-symbolic"
+                },
+                Some(media::Command::PlayPause),
+            ))
+            .push(button(
+                "media-skip-forward-symbolic",
+                media.can_go_next.then_some(media::Command::Next),
+            ))
+            .push(container(self.progress(media)).width(Length::Fill).padding([0, spacing.space_xs]))
+            .spacing(spacing.space_xxxs)
+            .align_y(Alignment::Center);
+        if self.config.lyrics {
+            row = row.push(widget::tooltip(
+                island_button(
+                    icons::named("audio-input-microphone-symbolic"),
+                    self.lyrics_view,
+                    Message::ToggleLyrics,
+                ),
+                widget::text::caption(fl!("lyrics")),
+                widget::tooltip::Position::Top,
+            ));
+        }
+        row.into()
     }
 
     fn media_controls(&self, media: &MediaState) -> Element<'_, Message> {
@@ -623,7 +664,7 @@ impl Island {
 
         let header = widget::Row::new()
             .push(
-                widget::text::heading(calendar::month_title(month, self.locale))
+                widget::text::heading(calendar::month_title(month, self.language))
                     .class(cosmic::theme::Text::Custom(accent_text))
                     .width(Length::Fill),
             )
@@ -650,7 +691,7 @@ impl Island {
 
         let mut grid = widget::Column::new().push(header).spacing(2);
         let mut names = widget::Row::new().width(Length::Fill);
-        for name in calendar::weekday_names(first_day, self.locale) {
+        for name in calendar::weekday_names(first_day, self.language) {
             names = names.push(cell(
                 widget::text::caption(name)
                     .class(cosmic::theme::Text::Custom(secondary_text))
@@ -758,11 +799,11 @@ impl Island {
         } else {
             widget::Column::new()
                 .push(
-                    widget::text::heading(clock::format(&self.now, "%A", self.locale))
+                    widget::text::heading(clock::format(&self.now, "%A", self.language))
                         .class(cosmic::theme::Text::Custom(accent_text)),
                 )
                 .push(widget::text::title1(today.day().to_string()))
-                .push(widget::text::body(calendar::month_title(today, self.locale)))
+                .push(widget::text::body(calendar::month_title(today, self.language)))
                 .push(
                     widget::text::caption(fl!("week", number = today.iso_week().week().to_string()))
                         .class(cosmic::theme::Text::Custom(secondary_text)),
@@ -797,7 +838,7 @@ impl Island {
                         widget::text::heading(clock::format(
                             &day.and_hms_opt(12, 0, 0).unwrap_or_default().and_utc(),
                             "%A",
-                            self.locale,
+                            self.language,
                         ))
                         .class(cosmic::theme::Text::Custom(accent_text)),
                     )
@@ -805,7 +846,7 @@ impl Island {
                         widget::Row::new()
                             .push(widget::text::title1(day.day().to_string()))
                             .push(
-                                widget::text::caption(calendar::month_title(day, self.locale))
+                                widget::text::caption(calendar::month_title(day, self.language))
                                     .class(cosmic::theme::Text::Custom(secondary_text)),
                             )
                             .spacing(spacing.space_xxs)

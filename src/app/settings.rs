@@ -103,7 +103,7 @@ impl Island {
                 if query.is_empty() {
                     return Task::none();
                 }
-                let language = format!("{:?}", self.locale).split('_').next().unwrap_or("en").to_owned();
+                let language = format!("{:?}", self.language).split('_').next().unwrap_or("en").to_owned();
                 return cosmic::task::future(async move {
                     super::Message::WeatherFound(crate::modules::weather::find_place(query, language).await)
                 });
