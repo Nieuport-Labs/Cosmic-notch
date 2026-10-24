@@ -4,6 +4,7 @@
 //! panel places it among the other applets; the expanded island is a popup that
 //! grows out of it.
 
+mod events;
 mod home;
 mod settings;
 mod sync;
@@ -207,6 +208,7 @@ pub struct Island {
     /// When tasks were ticked off, for their leaving animation.
     ticked: HashMap<u64, Instant>,
     google: sync::GoogleSync,
+    calendar: events::CalendarSync,
 }
 
 #[derive(Debug, Clone)]
@@ -290,6 +292,22 @@ pub enum Message {
     GooglePulled(Result<(String, Vec<(String, String)>), crate::modules::google_tasks::Error>),
     GoogleApplied(Box<sync::Applied>),
     OpenOnlineAccounts,
+    /// Time to fetch the events from Google Calendar.
+    CalendarSync,
+    CalendarPulled(
+        chrono::NaiveDate,
+        chrono::NaiveDate,
+        Result<(String, Vec<crate::modules::google_calendar::Event>), crate::modules::google_calendar::Error>,
+    ),
+    CalendarSelect(chrono::NaiveDate),
+    EventNew,
+    EventTitle(String),
+    EventAllDay(bool),
+    EventStart(String),
+    EventEnd(String),
+    EventSubmit,
+    EventCancel,
+    EventCreated(Result<crate::modules::google_calendar::Event, crate::modules::google_calendar::Error>),
 }
 
 impl cosmic::Application for Island {
@@ -363,6 +381,7 @@ impl cosmic::Application for Island {
             todo_editing: None,
             ticked: HashMap::new(),
             google: Default::default(),
+            calendar: events::CalendarSync::new(Local::now().date_naive()),
         };
         let mut island = island;
         if flags.expand.is_none() {
@@ -373,7 +392,8 @@ impl cosmic::Application for Island {
         crate::modules::system::start();
         let thumbnails = island.load_thumbnails();
         let sync = island.sync_tasks();
-        (island, Task::batch([thumbnails, detect_share_targets(), sync]))
+        let calendar = island.sync_calendar();
+        (island, Task::batch([thumbnails, detect_share_targets(), sync, calendar]))
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -486,6 +506,7 @@ impl cosmic::Application for Island {
                 self.tab = tab;
                 match tab {
                     Tab::Shelf => return detect_share_targets(),
+                    Tab::Calendar => return self.sync_calendar(),
                     Tab::Tasks => {
                         return Task::batch([
                             cosmic::widget::text_input::focus(todo::new_task_input_id()),
@@ -918,7 +939,48 @@ impl cosmic::Application for Island {
             Message::CalendarShift(delta) => {
                 self.calendar_month =
                     crate::modules::calendar::shift_month(self.calendar_month, delta);
+                // Today when it is in the month, else the first day.
+                let today = self.now.date_naive();
+                let day = if Island::in_month(self.calendar_month, today) {
+                    today
+                } else {
+                    self.calendar_month
+                };
+                self.select_day(day);
+                return self.sync_calendar();
             }
+            Message::CalendarSync => return self.sync_calendar(),
+            Message::CalendarPulled(from, to, result) => {
+                return self.calendar_pulled(from, to, result);
+            }
+            Message::CalendarSelect(day) => self.select_day(day),
+            Message::EventNew => {
+                self.calendar.form = Some(events::EventForm::new(self.now));
+                return cosmic::widget::text_input::focus(events::event_title_input_id());
+            }
+            Message::EventTitle(text) => {
+                if let Some(form) = &mut self.calendar.form {
+                    form.title = text;
+                }
+            }
+            Message::EventAllDay(all_day) => {
+                if let Some(form) = &mut self.calendar.form {
+                    form.all_day = all_day;
+                }
+            }
+            Message::EventStart(text) => {
+                if let Some(form) = &mut self.calendar.form {
+                    form.start = text;
+                }
+            }
+            Message::EventEnd(text) => {
+                if let Some(form) = &mut self.calendar.form {
+                    form.end = text;
+                }
+            }
+            Message::EventSubmit => return self.submit_event(),
+            Message::EventCancel => self.calendar.form = None,
+            Message::EventCreated(result) => return self.event_created(result),
         }
         Task::none()
     }
@@ -1004,6 +1066,12 @@ impl cosmic::Application for Island {
             let tasks_shown = expanded && self.tab == Tab::Tasks;
             let every = Duration::from_secs(if tasks_shown { 60 } else { 600 });
             subscriptions.push(cosmic::iced::time::every(every).map(|_| Message::GoogleSync));
+        }
+        if self.config.google_calendar {
+            // Often while the calendar is on screen, now and then otherwise; opening the tab syncs too.
+            let shown = expanded && self.tab == Tab::Calendar;
+            let every = Duration::from_secs(if shown { 60 } else { 900 });
+            subscriptions.push(cosmic::iced::time::every(every).map(|_| Message::CalendarSync));
         }
         let sharing = self.share_page
             && self.tab == Tab::Shelf

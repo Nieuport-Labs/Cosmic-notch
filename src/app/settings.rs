@@ -23,6 +23,7 @@ pub enum Message {
     Lyrics(bool),
     ShowSection(Section, bool),
     GoogleTasks(bool),
+    GoogleCalendar(bool),
     OpenOnlineAccounts,
 }
 
@@ -57,6 +58,11 @@ impl Island {
                 self.write(|c, h| c.set_google_tasks(h, v));
                 self.google.error = None;
                 return self.sync_tasks();
+            }
+            Message::GoogleCalendar(v) => {
+                self.write(|c, h| c.set_google_calendar(h, v));
+                self.calendar.error = None;
+                return self.sync_calendar();
             }
             Message::OpenOnlineAccounts => {
                 return cosmic::task::message(cosmic::Action::App(super::Message::OpenOnlineAccounts));
@@ -194,13 +200,18 @@ impl Island {
                 .spacing(spacing.space_xxxs),
         );
 
-        let tasks = settings::section().title(fl!("section-tasks")).add(
+        let tasks = settings::section().title(fl!("google")).add(
             widget::Column::new()
                 .push(settings::item(
                     fl!("google-tasks"),
                     widget::toggler(config.google_tasks).on_toggle(Message::GoogleTasks),
                 ))
                 .push(widget::text::caption(self.google_status()))
+                .push(settings::item(
+                    fl!("google-calendar"),
+                    widget::toggler(config.google_calendar).on_toggle(Message::GoogleCalendar),
+                ))
+                .push(widget::text::caption(self.calendar_status()))
                 .push(
                     widget::button::link(fl!("open-online-accounts"))
                         .padding(0)

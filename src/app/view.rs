@@ -27,12 +27,12 @@ use crate::modules::shelf::{Clip, DragOut, Item};
 /// Width of the expanded island's content, from the design.
 pub const EXPANDED_WIDTH: f32 = 640.0;
 /// The lyrics page: size of the cover, and of the lines of the song.
-const LYRICS_COVER: f32 = 150.0;
-const LYRICS_LINE: f32 = 36.0;
-const LYRICS_ROWS: usize = 7;
+const LYRICS_COVER: f32 = 130.0;
+const LYRICS_LINE: f32 = 40.0;
+const LYRICS_ROWS: usize = 3;
 const LYRICS_HEIGHT: f32 = LYRICS_LINE * LYRICS_ROWS as f32;
-const LYRICS_SMALL: f32 = 15.0;
-const LYRICS_LARGE: f32 = 23.0;
+const LYRICS_SMALL: f32 = 14.0;
+const LYRICS_LARGE: f32 = 25.0;
 /// Gap between the panel's edges and the compact island.
 const COMPACT_INSET: f32 = 4.0;
 /// Size of a file's preview on the shelf; its name is no wider.
@@ -484,10 +484,15 @@ impl Island {
                     let emphasis = (1.0 - distance).clamp(0.0, 1.0);
                     let size = LYRICS_SMALL + (LYRICS_LARGE - LYRICS_SMALL) * emphasis;
                     // Long lines get a smaller size rather than a second line.
-                    let size = if text.chars().count() > 34 { size * 0.82 } else { size };
-                    let alpha = 0.32 + 0.68 * emphasis - 0.06 * (distance - 1.0).max(0.0);
+                    let size = size * (28.0 / text.chars().count().max(1) as f32).clamp(0.72, 1.0);
+                    let alpha = 0.4 + 0.6 * emphasis;
                     let label = widget::text(text.to_owned())
                         .size(size)
+                        .font(if emphasis > 0.5 {
+                            cosmic::font::semibold()
+                        } else {
+                            cosmic::font::default()
+                        })
                         .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1)))
                         .class(cosmic::theme::Text::Color(faded(Color {
                             a: alpha.clamp(0.12, 1.0),
@@ -652,21 +657,9 @@ impl Island {
         let today = self.now.date_naive();
         let first_day = calendar::weekday_from_config(self.time_config.first_day_of_week);
         let month = self.calendar_month;
+        let google = self.config.google_calendar;
         const CELL: f32 = 44.0;
-
-        let today_panel = widget::Column::new()
-            .push(
-                widget::text::heading(clock::format(&self.now, "%A", self.locale))
-                    .class(cosmic::theme::Text::Custom(accent_text)),
-            )
-            .push(widget::text::title1(today.day().to_string()))
-            .push(widget::text::body(calendar::month_title(today, self.locale)))
-            .push(
-                widget::text::caption(fl!("week", number = today.iso_week().week().to_string()))
-                    .class(cosmic::theme::Text::Custom(secondary_text)),
-            )
-            .spacing(spacing.space_xxxs)
-            .width(Length::Fixed(180.0));
+        const DAY: f32 = 28.0;
 
         let header = widget::Row::new()
             .push(
@@ -686,11 +679,11 @@ impl Island {
             ))
             .align_y(Alignment::Center);
 
-        let cell = |content: Element<'static, Message>| {
+        let cell = |content: Element<'static, Message>, height: f32| {
             container(content)
-                // Days share the width left by the today panel.
+                // Days share the width left by the side panel.
                 .width(Length::Fill)
-                .height(Length::Fixed(CELL * 0.8))
+                .height(Length::Fixed(height))
                 .align_x(Alignment::Center)
                 .align_y(Alignment::Center)
         };
@@ -702,19 +695,23 @@ impl Island {
                 widget::text::caption(name)
                     .class(cosmic::theme::Text::Custom(secondary_text))
                     .into(),
+                CELL * 0.6,
             ));
         }
         grid = grid.push(names);
+        let row_height = if google { CELL * 0.92 } else { CELL * 0.8 };
         for week in calendar::month_grid(month.year(), month.month(), first_day) {
             let mut row = widget::Row::new().width(Length::Fill);
             for date in week {
                 let Some(date) = date else {
-                    row = row.push(cell(widget::Space::new().into()));
+                    row = row.push(cell(widget::Space::new().into(), row_height));
                     continue;
                 };
                 let label = widget::text::body(date.day().to_string());
                 let weekend =
                     matches!(date.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun);
+                let selected = google && date == self.calendar.selected;
+                let size = if google { DAY } else { CELL * 0.75 };
                 let label: Element<'static, Message> = if date == today {
                     container(label.class(cosmic::theme::Text::Custom(|theme| {
                         cosmic::iced::widget::text::Style {
@@ -722,8 +719,8 @@ impl Island {
                             ..Default::default()
                         }
                     })))
-                    .width(Length::Fixed(CELL * 0.75))
-                    .height(Length::Fixed(CELL * 0.75))
+                    .width(Length::Fixed(size))
+                    .height(Length::Fixed(size))
                     .align_x(Alignment::Center)
                     .align_y(Alignment::Center)
                     .class(cosmic::theme::Container::custom(|theme| container::Style {
@@ -735,21 +732,256 @@ impl Island {
                         ..Default::default()
                     }))
                     .into()
+                } else if selected {
+                    container(label)
+                        .width(Length::Fixed(size))
+                        .height(Length::Fixed(size))
+                        .align_x(Alignment::Center)
+                        .align_y(Alignment::Center)
+                        .class(cosmic::theme::Container::custom(|theme| {
+                            plate_style(theme, [CELL; 4])
+                        }))
+                        .into()
                 } else if weekend {
                     label.class(cosmic::theme::Text::Custom(secondary_text)).into()
                 } else {
                     label.into()
                 };
-                row = row.push(cell(label));
+                if !google {
+                    row = row.push(cell(label, row_height));
+                    continue;
+                }
+                // A dot under days that have events; days are buttons that pick the day.
+                let dot: Element<'static, Message> = if self.calendar.on(date).is_empty() {
+                    widget::Space::new().height(Length::Fixed(4.0)).into()
+                } else {
+                    container(widget::Space::new())
+                        .width(Length::Fixed(4.0))
+                        .height(Length::Fixed(4.0))
+                        .class(cosmic::theme::Container::custom(|theme| container::Style {
+                            background: Some(faded(theme.cosmic().accent_color()).into()),
+                            border: cosmic::iced::Border {
+                                radius: 2.0.into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }))
+                        .into()
+                };
+                let day = widget::Column::new()
+                    .push(label)
+                    .push(dot)
+                    .spacing(1)
+                    .align_x(Alignment::Center);
+                row = row.push(cell(
+                    button::custom(day)
+                        .padding([2, 4])
+                        .class(button_class(false))
+                        .on_press(Message::CalendarSelect(date))
+                        .into(),
+                    row_height,
+                ));
             }
             grid = grid.push(row);
         }
 
+        let side: Element<'_, Message> = if google {
+            self.events_panel()
+        } else {
+            widget::Column::new()
+                .push(
+                    widget::text::heading(clock::format(&self.now, "%A", self.locale))
+                        .class(cosmic::theme::Text::Custom(accent_text)),
+                )
+                .push(widget::text::title1(today.day().to_string()))
+                .push(widget::text::body(calendar::month_title(today, self.locale)))
+                .push(
+                    widget::text::caption(fl!("week", number = today.iso_week().week().to_string()))
+                        .class(cosmic::theme::Text::Custom(secondary_text)),
+                )
+                .spacing(spacing.space_xxxs)
+                .width(Length::Fixed(180.0))
+                .into()
+        };
+
         widget::Row::new()
-            .push(today_panel)
+            .push(side)
             .push(grid.width(Length::Fill))
             .spacing(spacing.space_s)
             .into()
+    }
+
+    /// The side of the calendar with Google Calendar on: the events of the picked day, or the form for a new one.
+    fn events_panel(&self) -> Element<'_, Message> {
+        use crate::modules::calendar;
+        use crate::modules::google_calendar::When;
+        use chrono::Datelike;
+
+        let spacing = cosmic::theme::spacing();
+        let day = self.calendar.selected;
+        const WIDTH: f32 = 230.0;
+        const LIST_HEIGHT: f32 = 150.0;
+
+        let heading = widget::Row::new()
+            .push(
+                widget::Column::new()
+                    .push(
+                        widget::text::heading(clock::format(
+                            &day.and_hms_opt(12, 0, 0).unwrap_or_default().and_utc(),
+                            "%A",
+                            self.locale,
+                        ))
+                        .class(cosmic::theme::Text::Custom(accent_text)),
+                    )
+                    .push(
+                        widget::Row::new()
+                            .push(widget::text::title1(day.day().to_string()))
+                            .push(
+                                widget::text::caption(calendar::month_title(day, self.locale))
+                                    .class(cosmic::theme::Text::Custom(secondary_text)),
+                            )
+                            .spacing(spacing.space_xxs)
+                            .align_y(Alignment::End),
+                    )
+                    .width(Length::Fill),
+            )
+            .push(island_button(
+                icons::named("list-add-symbolic"),
+                self.calendar.form.is_some(),
+                Message::EventNew,
+            ))
+            .align_y(Alignment::Start);
+
+        let body: Element<'_, Message> = if let Some(form) = &self.calendar.form {
+            let time_input = |value: &str, on_input: fn(String) -> Message| {
+                widget::text_input("12:00", value.to_owned())
+                    .on_input(on_input)
+                    .on_submit(|_| Message::EventSubmit)
+                    .width(Length::Fixed(64.0))
+            };
+            let mut column = widget::Column::new()
+                .push(
+                    widget::text_input(fl!("event-title"), form.title.clone())
+                        .id(super::events::event_title_input_id())
+                        .on_input(Message::EventTitle)
+                        .on_submit(|_| Message::EventSubmit)
+                        .width(Length::Fill),
+                )
+                .push(
+                    widget::Row::new()
+                        .push(widget::text::body(fl!("event-all-day")).width(Length::Fill))
+                        .push(widget::toggler(form.all_day).on_toggle(Message::EventAllDay))
+                        .align_y(Alignment::Center),
+                )
+                .spacing(spacing.space_xxs);
+            if !form.all_day {
+                column = column.push(
+                    widget::Row::new()
+                        .push(widget::text::caption(fl!("event-from")))
+                        .push(time_input(&form.start, Message::EventStart))
+                        .push(widget::text::caption(fl!("event-to")))
+                        .push(time_input(&form.end, Message::EventEnd))
+                        .spacing(spacing.space_xxs)
+                        .align_y(Alignment::Center),
+                );
+            }
+            if let Some(error) = &form.error {
+                column = column.push(
+                    widget::text::caption(error.clone())
+                        .class(cosmic::theme::Text::Custom(error_text)),
+                );
+            }
+            column
+                .push(
+                    widget::Row::new()
+                        .push(widget::Space::new().width(Length::Fill))
+                        .push(widget::button::text(fl!("event-cancel")).on_press(Message::EventCancel))
+                        .push(
+                            widget::button::suggested(fl!("event-add"))
+                                .on_press_maybe((!form.creating).then_some(Message::EventSubmit)),
+                        )
+                        .spacing(spacing.space_xxs),
+                )
+                .height(Length::Fixed(LIST_HEIGHT))
+                .into()
+        } else if let Some(note) = self.calendar_note() {
+            container(widget::text::caption(note).class(cosmic::theme::Text::Custom(secondary_text)))
+                .height(Length::Fixed(LIST_HEIGHT))
+                .into()
+        } else {
+            let events = self.calendar.on(day);
+            if events.is_empty() {
+                container(
+                    widget::text::body(fl!("events-none"))
+                        .class(cosmic::theme::Text::Custom(secondary_text)),
+                )
+                .height(Length::Fixed(LIST_HEIGHT))
+                .into()
+            } else {
+                let mut list = widget::Column::new().spacing(spacing.space_xxs);
+                for event in events {
+                    let when = match (event.start, event.end) {
+                        (When::At(start), When::At(end)) => {
+                            format!("{} – {}", start.format("%H:%M"), end.format("%H:%M"))
+                        }
+                        _ => fl!("event-all-day"),
+                    };
+                    let bar = container(widget::Space::new())
+                        .width(Length::Fixed(3.0))
+                        .height(Length::Fill)
+                        .class(cosmic::theme::Container::custom(|theme| container::Style {
+                            background: Some(faded(theme.cosmic().accent_color()).into()),
+                            border: cosmic::iced::Border {
+                                radius: 2.0.into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }));
+                    list = list.push(
+                        widget::Row::new()
+                            .push(bar)
+                            .push(
+                                widget::Column::new()
+                                    .push(
+                                        widget::text::body(if event.title.is_empty() {
+                                            "—".to_owned()
+                                        } else {
+                                            event.title.clone()
+                                        })
+                                        .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1))),
+                                    )
+                                    .push(
+                                        widget::text::caption(when)
+                                            .class(cosmic::theme::Text::Custom(secondary_text)),
+                                    )
+                                    .width(Length::Fill),
+                            )
+                            .spacing(spacing.space_xs)
+                            .height(Length::Fixed(40.0)),
+                    );
+                }
+                widget::scrollable(list.padding([0, spacing.space_xs, 0, 0]))
+                    .height(Length::Fixed(LIST_HEIGHT))
+                    .into()
+            }
+        };
+
+        widget::Column::new()
+            .push(heading)
+            .push(body)
+            .spacing(spacing.space_xs)
+            .width(Length::Fixed(WIDTH))
+            .into()
+    }
+
+    /// Why no events show, when Google Calendar can't be reached.
+    fn calendar_note(&self) -> Option<String> {
+        use crate::modules::google_calendar::Error;
+        match self.calendar.error.as_ref()? {
+            Error::NoAccount => Some(fl!("events-sign-in")),
+            Error::NoPermission => Some(fl!("google-no-permission")),
+            Error::Other(error) => Some(fl!("google-error", error = error.clone())),
+        }
     }
 
     fn shelf_tab(&self, id: window::Id, opacity: f32) -> Element<'_, Message> {
@@ -1381,6 +1613,13 @@ pub fn secondary_text(theme: &cosmic::Theme) -> cosmic::iced::widget::text::Styl
 pub(super) fn accent_text(theme: &cosmic::Theme) -> cosmic::iced::widget::text::Style {
     cosmic::iced::widget::text::Style {
         color: Some(faded(theme.cosmic().accent_text_color())),
+        ..Default::default()
+    }
+}
+
+pub(super) fn error_text(theme: &cosmic::Theme) -> cosmic::iced::widget::text::Style {
+    cosmic::iced::widget::text::Style {
+        color: Some(faded(theme.cosmic().destructive_text_color())),
         ..Default::default()
     }
 }

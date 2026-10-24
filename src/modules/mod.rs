@@ -8,4 +8,6 @@ pub mod pulse;
 pub mod shelf;
 pub mod system;
 pub mod tasks;
+pub mod google;
+pub mod google_calendar;
 pub mod google_tasks;
