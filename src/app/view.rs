@@ -138,6 +138,23 @@ impl Island {
             row = row.push(now_playing);
         }
 
+        if self.config.weather_compact
+            && let Some(weather) = self.shown_weather()
+        {
+            row = row.push(
+                widget::Row::new()
+                    .push(
+                        widget::icon(icons::named(crate::modules::weather::icon(weather.code, weather.day)))
+                            .size((height * 0.5).round() as u16),
+                    )
+                    .push(
+                        widget::text::body(crate::modules::weather::format_temperature(weather.temperature))
+                            .font(cosmic::font::semibold()),
+                    )
+                    .spacing(spacing.space_xxxs)
+                    .align_y(Alignment::Center),
+            );
+        }
         row.push(widget::text::body(self.clock_text()).font(cosmic::font::semibold())).into()
     }
 

@@ -257,6 +257,29 @@ impl Island {
                     .width(Length::Fill),
             )
             .align_y(Alignment::Center);
+        if let Some(weather) = self.shown_weather() {
+            use crate::modules::weather;
+            row = row.push(
+                widget::Row::new()
+                    .push(widget::icon(crate::icons::named(weather::icon(weather.code, weather.day))).size(28))
+                    .push(
+                        widget::Column::new()
+                            .push(
+                                widget::text::title4(weather::format_temperature(weather.temperature))
+                                    .font(cosmic::font::bold()),
+                            )
+                            .push(secondary(format!(
+                                "{} · {} / {}",
+                                crate::i18n::LANGUAGE_LOADER.get(weather::kind(weather.code)),
+                                weather::format_temperature(weather.high),
+                                weather::format_temperature(weather.low),
+                            ))),
+                    )
+                    .spacing(spacing.space_xs)
+                    .align_y(Alignment::Center),
+            );
+            row = row.push(widget::Space::new().width(Length::Fixed(f32::from(spacing.space_m))));
+        }
         if let Some(text) = self.next_event_text() {
             row = row.push(
                 container(

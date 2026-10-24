@@ -12,3 +12,4 @@ pub mod tasks;
 pub mod google;
 pub mod google_calendar;
 pub mod google_tasks;
+pub mod weather;

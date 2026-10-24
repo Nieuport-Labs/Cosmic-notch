@@ -221,6 +221,10 @@ pub struct Island {
     ticked: HashMap<u64, Instant>,
     google: sync::GoogleSync,
     calendar: events::CalendarSync,
+    weather: Option<crate::modules::weather::Weather>,
+    /// The place typed in the settings, and what came of looking it up.
+    weather_query: String,
+    weather_status: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -320,6 +324,10 @@ pub enum Message {
     EventSubmit,
     EventCancel,
     EventCreated(Result<crate::modules::google_calendar::Event, crate::modules::google_calendar::Error>),
+    /// Time to look at the weather again.
+    WeatherFetch,
+    WeatherLoaded(Result<crate::modules::weather::Weather, String>),
+    WeatherFound(Result<Option<crate::modules::weather::Place>, String>),
 }
 
 impl cosmic::Application for Island {
@@ -385,6 +393,9 @@ impl cosmic::Application for Island {
             ticked: HashMap::new(),
             google: Default::default(),
             calendar: events::CalendarSync::new(Local::now().date_naive()),
+            weather: None,
+            weather_query: String::new(),
+            weather_status: None,
         };
         let mut island = island;
         if flags.expand.is_none() {
@@ -399,7 +410,9 @@ impl cosmic::Application for Island {
         let thumbnails = island.load_thumbnails();
         let sync = island.sync_tasks();
         let calendar = island.sync_calendar();
-        (island, Task::batch([thumbnails, detect_share_targets(), sync, calendar]))
+        island.weather_query = island.config.weather_place.as_ref().map(|p| p.name.clone()).unwrap_or_default();
+        let weather = island.fetch_weather();
+        (island, Task::batch([thumbnails, detect_share_targets(), sync, calendar, weather]))
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -1034,6 +1047,24 @@ impl cosmic::Application for Island {
             Message::EventSubmit => return self.submit_event(),
             Message::EventCancel => self.calendar.form = None,
             Message::EventCreated(result) => return self.event_created(result),
+            Message::WeatherFetch => return self.fetch_weather(),
+            Message::WeatherLoaded(result) => match result {
+                Ok(weather) => self.weather = Some(weather),
+                Err(err) => tracing::warn!("weather unavailable: {err}"),
+            },
+            Message::WeatherFound(result) => match result {
+                Ok(Some(place)) => {
+                    self.weather_query = place.name.clone();
+                    self.weather_status = None;
+                    self.weather = None;
+                    if let Some(handle) = &self.config_handle {
+                        let _ = self.config.set_weather_place(handle, Some(place));
+                    }
+                    return self.fetch_weather();
+                }
+                Ok(None) => self.weather_status = Some(crate::fl!("weather-not-found")),
+                Err(err) => self.weather_status = Some(crate::fl!("weather-error", error = err)),
+            },
         }
         Task::none()
     }
@@ -1136,6 +1167,11 @@ impl cosmic::Application for Island {
         if self.config.clipboard_history && self.clipboard_error.is_none() {
             subscriptions
                 .push(Subscription::run(crate::modules::clipboard::watch).map(Message::Clipboard));
+        }
+        if self.config.weather && self.config.weather_place.is_some() {
+            subscriptions.push(
+                cosmic::iced::time::every(Duration::from_secs(30 * 60)).map(|_| Message::WeatherFetch),
+            );
         }
         if self.config.google_calendar {
             // Often while the calendar is on screen, now and then otherwise; opening the tab syncs too.
@@ -1573,6 +1609,21 @@ impl Island {
         }
         self.save_shelf();
         self.load_thumbnails()
+    }
+
+    /// Looks at the weather, if it is on and there is a place.
+    pub(super) fn fetch_weather(&self) -> Task<Message> {
+        let (true, Some(place)) = (self.config.weather, self.config.weather_place.clone()) else {
+            return Task::none();
+        };
+        cosmic::task::future(async move {
+            Message::WeatherLoaded(crate::modules::weather::current(place).await)
+        })
+    }
+
+    /// The weather to show, if it is on.
+    pub(super) fn shown_weather(&self) -> Option<crate::modules::weather::Weather> {
+        self.config.weather.then_some(self.weather).flatten()
     }
 
     /// Keeps a copy on the clipboard shelf.

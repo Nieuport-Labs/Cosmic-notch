@@ -96,6 +96,11 @@ pub struct IslandConfig {
     pub hide_in_fullscreen: bool,
     /// A solid background instead of the theme's transparency and frosted glass.
     pub solid_background: bool,
+    /// Show the weather (from Open-Meteo) for `weather_place`.
+    pub weather: bool,
+    pub weather_place: Option<crate::modules::weather::Place>,
+    /// The weather also in the compact island, next to the time.
+    pub weather_compact: bool,
 }
 
 impl IslandConfig {
@@ -129,6 +134,10 @@ impl Default for IslandConfig {
             reduce_motion: false,
             hide_in_fullscreen: true,
             solid_background: false,
+            // Sends the place to a third party: only when the user asks for it.
+            weather: false,
+            weather_place: None,
+            weather_compact: true,
         }
     }
 }

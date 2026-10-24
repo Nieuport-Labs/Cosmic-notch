@@ -17,6 +17,10 @@ pub enum Message {
     NamedOutput(String, bool),
     HideInFullscreen(bool),
     SolidBackground(bool),
+    Weather(bool),
+    WeatherCompact(bool),
+    WeatherQuery(String),
+    WeatherSearch,
     ClockFormat(String),
     HoverDelay(u64),
     CollapseDelay(u64),
@@ -87,6 +91,22 @@ impl Island {
                 for state in self.surfaces.values_mut() {
                     state.synced = None;
                 }
+            }
+            Message::Weather(v) => {
+                self.write(|c, h| c.set_weather(h, v));
+                return self.fetch_weather();
+            }
+            Message::WeatherCompact(v) => self.write(|c, h| c.set_weather_compact(h, v)),
+            Message::WeatherQuery(text) => self.weather_query = text,
+            Message::WeatherSearch => {
+                let query = self.weather_query.trim().to_owned();
+                if query.is_empty() {
+                    return Task::none();
+                }
+                let language = format!("{:?}", self.locale).split('_').next().unwrap_or("en").to_owned();
+                return cosmic::task::future(async move {
+                    super::Message::WeatherFound(crate::modules::weather::find_place(query, language).await)
+                });
             }
             Message::ClockFormat(format) => {
                 let format = (!format.trim().is_empty()).then_some(format);
@@ -292,6 +312,35 @@ impl Island {
                     .spacing(spacing.space_xxxs),
             );
 
+        let place = match (&self.weather_status, &config.weather_place) {
+            (Some(status), _) => status.clone(),
+            (None, Some(place)) if !place.country.is_empty() => format!("{}, {}", place.name, place.country),
+            (None, Some(place)) => place.name.clone(),
+            (None, None) => fl!("weather-hint"),
+        };
+        let weather = settings::section()
+            .title(fl!("weather"))
+            .add(settings::item(
+                fl!("weather-show"),
+                widget::toggler(config.weather).on_toggle(Message::Weather),
+            ))
+            .add(
+                widget::Column::new()
+                    .push(settings::item(
+                        fl!("weather-place"),
+                        widget::text_input(fl!("weather-place-placeholder"), self.weather_query.clone())
+                            .on_input(Message::WeatherQuery)
+                            .on_submit(|_| Message::WeatherSearch)
+                            .width(Length::Fixed(180.0)),
+                    ))
+                    .push(widget::text::caption(place))
+                    .spacing(spacing.space_xxxs),
+            )
+            .add(settings::item(
+                fl!("weather-compact"),
+                widget::toggler(config.weather_compact).on_toggle(Message::WeatherCompact),
+            ));
+
         let compact = settings::section()
             .title(fl!("compact"))
             .add(settings::item(
@@ -379,6 +428,7 @@ impl Island {
                 .push(behavior)
                 .push(compact)
                 .push(cards)
+                .push(weather)
                 .push(history)
                 .push(tasks)
                 .push(lyrics)
