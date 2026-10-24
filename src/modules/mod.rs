@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod clipboard;
 pub mod calendar;
 pub mod clock;
 pub mod localsend;
@@ -8,4 +9,7 @@ pub mod pulse;
 pub mod shelf;
 pub mod system;
 pub mod tasks;
+pub mod google;
+pub mod google_calendar;
 pub mod google_tasks;
+pub mod weather;

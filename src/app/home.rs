@@ -1,0 +1,545 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+//! The home tab: how busy the computer is.
+
+use std::collections::VecDeque;
+
+use cosmic::iced::advanced::text::{Ellipsize, EllipsizeHeightLimit};
+use cosmic::iced::{Alignment, Color, Length};
+use cosmic::widget::{self, container};
+use cosmic::Element;
+
+use super::view::{accent_text, button_class, plate_style, secondary_text};
+use super::{Island, Message};
+use crate::config::HomeCard;
+use crate::fl;
+use crate::island::fade::faded;
+use crate::modules::system::{self, Disk};
+
+const GRAPH_HEIGHT: f32 = 36.0;
+/// Cover of the mini player.
+const COVER: f32 = 72.0;
+
+impl Island {
+    pub(super) fn home_tab(&self, opacity: f32) -> Element<'_, Message> {
+        let spacing = cosmic::theme::spacing();
+        let monitor = system::monitor();
+        let locale = self.locale;
+        let bytes = |b: u64| system::format_bytes(b as f64, locale);
+
+        // CPU: use now, its history and the package temperature.
+        let mut cpu_side = widget::Row::new().spacing(spacing.space_xxs);
+        if let Some(temperature) = monitor.temperature {
+            cpu_side = cpu_side.push(secondary(format!("{temperature:.0} °C")));
+        }
+        let cpu = card(
+            fl!("cpu"),
+            cpu_side.into(),
+            widget::Column::new()
+                .push(
+                    widget::Row::new()
+                        .push(widget::text::title2(percent(monitor.cpu_now())).font(cosmic::font::bold()))
+                        .push(secondary(match monitor.frequency {
+                            Some(ghz) => system::format_ghz(ghz, locale),
+                            None => fl!("cores", count = monitor.cores),
+                        }))
+                        .spacing(spacing.space_xs)
+                        .align_y(Alignment::Center),
+                )
+                .push(graph(&monitor.cpu, 1.0, GRAPH_HEIGHT, false))
+                .spacing(spacing.space_xxs)
+                .into(),
+        );
+
+        // Network: download above the middle line, upload below it.
+        let rx = monitor.rx.back().copied().unwrap_or(0.0);
+        let tx = monitor.tx.back().copied().unwrap_or(0.0);
+        let rate = |icon: &'static str, value: f64| {
+            widget::Row::new()
+                .push(widget::icon(crate::icons::named(icon)).size(14))
+                .push(secondary(format!("{}/s", system::format_bytes(value, locale))))
+                .spacing(2)
+                .align_y(Alignment::Center)
+        };
+        // Network and weather take one line each, next to memory and disks.
+        let line = |name: String, side: Element<'static, Message>| {
+            widget::Row::new()
+                .push(widget::text::body(name).width(Length::Fill))
+                .push(side)
+                .align_y(Alignment::Center)
+        };
+        let network = line(
+            fl!("network"),
+            widget::Row::new()
+                .push(rate("go-down-symbolic", rx))
+                .push(rate("go-up-symbolic", tx))
+                .spacing(spacing.space_xs)
+                .into(),
+        );
+
+        // The graphics card, where the kernel reports on one.
+        let gpu = (system::gpu_present() && self.config.shows_card(HomeCard::Gpu)).then(|| {
+            let info = monitor.gpu.clone().unwrap_or_default();
+            let mut side = widget::Row::new().spacing(spacing.space_xxs);
+            if let Some(temperature) = info.temperature {
+                side = side.push(secondary(format!("{temperature:.0} °C")));
+            }
+            let detail = match (info.freq_mhz, info.vram) {
+                (_, Some((used, total))) => fl!("used-of", used = bytes(used), total = bytes(total)),
+                (Some(mhz), None) if mhz > 0 => format!("{mhz} MHz"),
+                _ => info.name.to_owned(),
+            };
+            card(
+                fl!("gpu"),
+                side.into(),
+                widget::Column::new()
+                    .push(
+                        widget::Row::new()
+                            .push(
+                                widget::text::title2(
+                                    monitor.gpu_busy.back().map_or_else(|| "– %".to_owned(), |b| percent(*b)),
+                                )
+                                .font(cosmic::font::bold()),
+                            )
+                            .push(secondary(detail))
+                            .spacing(spacing.space_xs)
+                            .align_y(Alignment::Center),
+                    )
+                    .push(graph(&monitor.gpu_busy, 1.0, GRAPH_HEIGHT, false))
+                    .spacing(spacing.space_xxs)
+                    .into(),
+            )
+        });
+
+        // Memory and disks, one line and bar each.
+        let memory = monitor.memory;
+        let share = |used: u64, total: u64| used as f32 / total.max(1) as f32;
+        let usage = |name: String, detail: String, share: f32| {
+            widget::Column::new()
+                .push(
+                    widget::Row::new()
+                        .push(widget::text::body(name).width(Length::Fill))
+                        .push(secondary(detail))
+                        .align_y(Alignment::Center),
+                )
+                .push(meter(share))
+                .spacing(2)
+        };
+        let memory_share = share(memory.used(), memory.total);
+        let mut usage_body = widget::Column::new().spacing(spacing.space_xs);
+        if self.config.shows_card(HomeCard::Storage) {
+            usage_body = usage_body.push(usage(
+                fl!("memory"),
+                format!(
+                    "{} · {}",
+                    fl!("used-of", used = bytes(memory.used()), total = bytes(memory.total)),
+                    percent(memory_share)
+                ),
+                memory_share,
+            ));
+            for disk in monitor.disks.iter().take(2) {
+                usage_body = usage_body.push(usage(
+                    disk_name(disk),
+                    fl!("free", free = bytes(disk.available)),
+                    share(disk.used(), disk.total),
+                ));
+            }
+        }
+        if self.config.shows_card(HomeCard::Network) {
+            usage_body = usage_body.push(network);
+        }
+        let usage = small_card(usage_body.into());
+
+        let mut second_row = widget::Row::new().spacing(spacing.space_l);
+        if self.config.shows_card(HomeCard::Player)
+            && let Some(player) = self.mini_player(opacity)
+        {
+            second_row = second_row.push(player);
+        }
+        let has_usage = self.config.shows_card(HomeCard::Storage)
+            || self.config.shows_card(HomeCard::Network);
+        if has_usage {
+            second_row = second_row.push(usage);
+        }
+
+        // The figures side by side, with room and a hairline between them.
+        let mut figures: Vec<Element<'_, Message>> = Vec::new();
+        if self.config.shows_card(HomeCard::Cpu) {
+            figures.push(cpu);
+        }
+        if let Some(gpu) = gpu {
+            figures.push(gpu);
+        }
+        let has_cards = !figures.is_empty();
+        let mut cards = widget::Row::new().spacing(spacing.space_m);
+        for (i, figure) in figures.into_iter().enumerate() {
+            if i > 0 {
+                cards = cards.push(
+                    container(widget::Space::new())
+                        .width(Length::Fixed(1.0))
+                        .height(Length::Fixed(84.0))
+                        .class(cosmic::theme::Container::custom(|theme| plate_style(theme, [0.0; 4]))),
+                );
+            }
+            cards = cards.push(figure);
+        }
+
+        let mut page = widget::Column::new().spacing(spacing.space_s).padding([spacing.space_xxs, spacing.space_xs]);
+        if self.config.shows_card(HomeCard::Greeting) {
+            page = page.push(self.greeting());
+        }
+        if has_cards {
+            page = page.push(cards);
+        }
+        if self.config.shows_card(HomeCard::Player) && self.media.is_some() || has_usage {
+            page = page.push(second_row);
+        }
+        page.into()
+    }
+}
+
+impl Island {
+    /// A greeting by the time of day, the date, and the next event of Google Calendar.
+    fn greeting(&self) -> Element<'_, Message> {
+        use chrono::Timelike;
+        let spacing = cosmic::theme::spacing();
+        let greeting = match self.now.hour() {
+            5..=10 => fl!("greeting-morning"),
+            11..=16 => fl!("greeting-day"),
+            17..=21 => fl!("greeting-evening"),
+            _ => fl!("greeting-night"),
+        };
+        let title = match user_first_name() {
+            Some(name) => format!("{greeting}, {name}"),
+            None => greeting,
+        };
+        // The date is in the island's header already.
+        let mut row = widget::Row::new()
+            .push(
+                widget::text::title3(title)
+                    .font(cosmic::font::bold())
+                    .width(Length::Fill),
+            )
+            .align_y(Alignment::Center);
+        // The weather faces the greeting, on one line no taller than it.
+        if let Some(w) = self.shown_weather() {
+            use crate::modules::weather;
+            row = row.push(
+                widget::Row::new()
+                    .push(widget::icon(crate::icons::named(weather::icon(w.code, w.day))).size(20))
+                    .push(
+                        widget::text::heading(weather::format_temperature(w.temperature))
+                            .font(cosmic::font::bold()),
+                    )
+                    .push(secondary(format!(
+                        "{} · {} / {}",
+                        crate::i18n::LANGUAGE_LOADER.get(weather::kind(w.code)),
+                        weather::format_temperature(w.high),
+                        weather::format_temperature(w.low),
+                    )))
+                    .spacing(spacing.space_xxs)
+                    .align_y(Alignment::Center),
+            );
+        }
+        if let Some(text) = self.next_event_text() {
+            row = row.push(widget::Space::new().width(Length::Fixed(f32::from(spacing.space_m))));
+            row = row.push(
+                container(
+                    widget::Row::new()
+                        .push(widget::icon(crate::icons::calendar()).size(16))
+                        .push(
+                            widget::text::body(text)
+                                .font(cosmic::font::semibold())
+                                .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1))),
+                        )
+                        .spacing(spacing.space_xxs)
+                        .align_y(Alignment::Center),
+                )
+                .padding([spacing.space_xxs, spacing.space_s])
+                .max_width(300.0)
+                .class(cosmic::theme::Container::custom(|theme| {
+                    plate_style(theme, [theme.cosmic().radius_s()[0]; 4])
+                })),
+            );
+        }
+        row.into()
+    }
+
+    /// "Dentist · 14:30" for the next event, if Google Calendar shows one.
+    fn next_event_text(&self) -> Option<String> {
+        use crate::modules::google_calendar::When;
+        let event = self.next_event()?;
+        let today = self.now.date_naive();
+        let title = if event.title.is_empty() { "—".to_owned() } else { event.title.clone() };
+        let when = match event.start {
+            When::At(start) if start <= self.now => fl!("event-now"),
+            When::At(start) if start.date_naive() == today => start.format("%H:%M").to_string(),
+            When::At(start) => format!(
+                "{} {}",
+                crate::modules::clock::format(&start, "%a", self.language),
+                start.format("%H:%M")
+            ),
+            When::Day(day) if day <= today => fl!("event-today"),
+            When::Day(day) => crate::modules::clock::format(
+                &day.and_hms_opt(12, 0, 0)?.and_utc(),
+                "%a",
+                self.language,
+            ),
+        };
+        Some(format!("{title} · {when}"))
+    }
+}
+
+/// The user's first name, from the account's full name; the login name as a fallback.
+fn user_first_name() -> Option<String> {
+    static NAME: std::sync::LazyLock<Option<String>> = std::sync::LazyLock::new(|| {
+        // SAFETY: getuid has no preconditions.
+        let uid = unsafe { libc::getuid() };
+        let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
+        let from_passwd = passwd.lines().find_map(|line| {
+            let fields: Vec<&str> = line.split(':').collect();
+            (fields.get(2)?.parse::<u32>().ok()? == uid)
+                .then(|| fields.get(4).copied().unwrap_or_default().split(',').next().unwrap_or_default().to_owned())
+        });
+        let full = from_passwd.filter(|n| !n.trim().is_empty());
+        let name = full
+            .and_then(|n| n.split_whitespace().next().map(str::to_owned))
+            .or_else(|| {
+                std::env::var("USER").ok().map(|user| {
+                    let mut chars = user.chars();
+                    chars.next().map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
+                })
+            });
+        name.filter(|n| !n.is_empty())
+    });
+    NAME.clone()
+}
+
+impl Island {
+    /// What plays, with its controls; a click on it opens the media tab.
+    fn mini_player(&self, opacity: f32) -> Option<Element<'_, Message>> {
+        use crate::modules::media::{Command, Status};
+        let media = self.media.as_ref()?;
+        let spacing = cosmic::theme::spacing();
+        let mut title = widget::Row::new()
+            .push(
+                widget::text::heading(media.title.clone())
+                    .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1)))
+                    .width(Length::Fill),
+            )
+            .spacing(spacing.space_xxs)
+            .align_y(Alignment::Center);
+        if media.status == Status::Playing && self.bars_enabled() {
+            title = title.push(self.bars(14.0));
+        }
+        let controls = widget::Row::new()
+            .push(control(
+                "media-skip-backward-symbolic",
+                media.can_go_previous.then_some(Command::Previous),
+                20,
+            ))
+            .push(control(
+                if media.status == Status::Playing {
+                    "media-playback-pause-symbolic"
+                } else {
+                    "media-playback-start-symbolic"
+                },
+                Some(Command::PlayPause),
+                20,
+            ))
+            .push(control(
+                "media-skip-forward-symbolic",
+                media.can_go_next.then_some(Command::Next),
+                20,
+            ))
+            .spacing(spacing.space_xxs)
+            .align_y(Alignment::Center);
+        let text = widget::mouse_area(
+            widget::Column::new()
+                .push(title)
+                .push(
+                    secondary(media.artists.clone())
+                        .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1))),
+                )
+                .spacing(2)
+                .width(Length::Fill),
+        )
+        .on_press(Message::SelectTab(super::Tab::Media));
+        let played = media.length.map_or(0.0, |length| {
+            media.position_at(std::time::Instant::now()).as_secs_f32() / length.as_secs_f32().max(1.0)
+        });
+        Some(small_card(
+            widget::Row::new()
+                .push(
+                    widget::mouse_area(self.cover(COVER, false, opacity))
+                        .on_press(Message::SelectTab(super::Tab::Media)),
+                )
+                .push(
+                    widget::Column::new()
+                        .push(text)
+                        .push(controls)
+                        .push(progress_line(played))
+                        .spacing(spacing.space_xxs),
+                )
+                .spacing(spacing.space_s)
+                .align_y(Alignment::Center)
+                .into(),
+        ))
+    }
+}
+
+/// A compact player button; the media tab's are too wide for the card.
+fn control(
+    icon: &'static str,
+    command: Option<crate::modules::media::Command>,
+    size: u16,
+) -> Element<'static, Message> {
+    widget::button::custom(widget::icon(crate::icons::named(icon)).size(size))
+        .padding(6)
+        .class(button_class(false))
+        .on_press_maybe(command.map(Message::MediaCommand))
+        .into()
+}
+
+/// A part of the second row, without a plate.
+fn small_card(body: Element<'_, Message>) -> Element<'_, Message> {
+    container(body).width(Length::Fill).into()
+}
+
+/// A thin line that fills with `share` (0–1), for how far the track has played.
+fn progress_line(share: f32) -> Element<'static, Message> {
+    let filled = (share.clamp(0.0, 1.0) * 1000.0).round() as u16;
+    let mut row = widget::Row::new().height(Length::Fill);
+    if filled > 0 {
+        row = row.push(
+            container(widget::Space::new())
+                .width(Length::FillPortion(filled))
+                .height(Length::Fill)
+                .class(cosmic::theme::Container::custom(|theme| container::Style {
+                    background: Some(faded(theme.cosmic().accent_color()).into()),
+                    border: cosmic::iced::Border {
+                        radius: 2.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })),
+        );
+    }
+    if filled < 1000 {
+        row = row.push(widget::Space::new().width(Length::FillPortion(1000 - filled)));
+    }
+    container(row)
+        .width(Length::Fill)
+        .height(Length::Fixed(3.0))
+        .class(cosmic::theme::Container::custom(|theme| plate_style(theme, [2.0; 4])))
+        .into()
+}
+
+fn secondary(text: String) -> widget::Text<'static, cosmic::Theme> {
+    widget::text::caption(text).font(cosmic::font::semibold()).class(cosmic::theme::Text::Custom(secondary_text))
+}
+
+fn percent(share: f32) -> String {
+    format!("{:.0} %", share * 100.0)
+}
+
+/// A card with a title, something on the right of it and a body.
+fn card<'a>(
+    title: String,
+    side: Element<'a, Message>,
+    body: Element<'a, Message>,
+) -> Element<'a, Message> {
+    let spacing = cosmic::theme::spacing();
+    // No plate around it: the page breathes through the space between, not boxes.
+    widget::Column::new()
+        .push(
+            widget::Row::new()
+                .push(
+                    widget::text::heading(title)
+                        .class(cosmic::theme::Text::Custom(accent_text))
+                        .width(Length::Fill),
+                )
+                .push(side)
+                .align_y(Alignment::Center),
+        )
+        .push(body)
+        .spacing(spacing.space_xxs)
+        .width(Length::Fill)
+        .into()
+}
+
+/// A history as thin bars, newest on the right; `hanging` bars grow down from the top.
+fn graph(history: &VecDeque<f32>, max: f32, height: f32, hanging: bool) -> Element<'static, Message> {
+    let missing = system::HISTORY.saturating_sub(history.len());
+    let values = std::iter::repeat_n(0.0, missing).chain(history.iter().copied());
+    let mut row = widget::Row::new()
+        .spacing(1)
+        .height(Length::Fixed(height))
+        .align_y(if hanging { Alignment::Start } else { Alignment::End });
+    for value in values {
+        let share = (value / max).clamp(0.0, 1.0);
+        row = row.push(
+            container(widget::Space::new())
+                .width(Length::Fill)
+                .height(Length::Fixed((share * height).max(1.0)))
+                .class(cosmic::theme::Container::custom(move |theme| {
+                    let accent = theme.cosmic().accent_color();
+                    // Faint for an idle sample, so the baseline reads as one.
+                    let alpha = if share > 0.0 { 0.35 + 0.65 * share } else { 0.25 };
+                    container::Style {
+                        background: Some(faded(Color { a: alpha, ..accent.into() }).into()),
+                        border: cosmic::iced::Border {
+                            radius: 1.0.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }
+                })),
+        );
+    }
+    row.into()
+}
+
+/// A filled bar: accent, or the destructive color when nearly full.
+fn meter(share: f32) -> Element<'static, Message> {
+    let share = share.clamp(0.0, 1.0);
+    let filled = (share * 1000.0).round() as u16;
+    let fill = container(widget::Space::new())
+        .width(Length::FillPortion(filled.max(1)))
+        .height(Length::Fill)
+        .class(cosmic::theme::Container::custom(move |theme| {
+            let cosmic = theme.cosmic();
+            let color = if share >= 0.9 {
+                cosmic.destructive_color()
+            } else {
+                cosmic.accent_color()
+            };
+            container::Style {
+                background: Some(faded(color).into()),
+                border: cosmic::iced::Border {
+                    radius: 3.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        }));
+    let mut row = widget::Row::new().push(fill);
+    if filled < 1000 {
+        row = row.push(widget::Space::new().width(Length::FillPortion(1000 - filled)));
+    }
+    container(row.height(Length::Fill))
+        .width(Length::Fill)
+        .height(Length::Fixed(4.0))
+        .class(cosmic::theme::Container::custom(|theme| {
+            plate_style(theme, [2.0; 4])
+        }))
+        .into()
+}
+
+fn disk_name(disk: &Disk) -> String {
+    match disk.mount.as_str() {
+        "/" => fl!("disk-system"),
+        "/home" => fl!("disk-home"),
+        mount => mount.rsplit('/').next().unwrap_or(mount).to_string(),
+    }
+}

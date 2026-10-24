@@ -8,15 +8,15 @@
   <summary>Live activities over the COSMIC panel</summary>
   <summary xml:lang="cs">Živé aktivity přes panel COSMIC</summary>
   <description>
-    <p>A Dynamic Island for the COSMIC desktop. It sits over the top panel and shows the date, the time and what is playing. Point at it and it opens into:</p>
+    <p>A Dynamic Island for the COSMIC desktop. It sits over the top panel and shows the date, the time, the weather and what is playing. Point at it and it opens into:</p>
     <ul>
-      <li>a home page with CPU, network, memory, disks, battery and a small player,</li>
+      <li>a home page with a greeting, CPU, graphics, network, memory, disks, battery and a small player,</li>
       <li>media controls with synced lyrics,</li>
-      <li>a shelf that holds files, text and images and sends them to your phone over LocalSend or KDE Connect,</li>
-      <li>a calendar,</li>
+      <li>a shelf that holds files, text and images, can keep a history of what you copy, and sends files to your devices over LocalSend or KDE Connect,</li>
+      <li>a calendar with the events of Google Calendar, where you can add new ones,</li>
       <li>a to-do list that can sync with Google Tasks.</li>
     </ul>
-    <p>It follows your COSMIC theme: font, accent, transparency, frosted glass and corner radius. It steps aside for fullscreen videos and games.</p>
+    <p>It follows your COSMIC theme: font, accent, transparency, frosted glass and corner radius. A mode without animations is in the settings.</p>
     <p xml:lang="cs">Dynamický ostrov pro desktop COSMIC. Sedí přes horní panel a ukazuje datum, čas a co hraje. Po najetí myší se rozbalí na přehled systému, ovládání přehrávače s texty písní, přihrádku souborů, kalendář a úkoly synchronizované s Google Tasks.</p>
   </description>
   <url type="homepage">https://github.com/Nieuport-Labs/Cosmic-notch</url>
@@ -61,12 +61,21 @@
   </screenshots>
   <icon type="stock">io.github.jiricepelka.CosmicExtIsland</icon>
   <launchable type="desktop-id">io.github.jiricepelka.CosmicExtIsland.desktop</launchable>
+  <branding>
+    <color type="primary" scheme_preference="light">#8fe9f2</color>
+    <color type="primary" scheme_preference="dark">#2a2d35</color>
+  </branding>
   <provides>
     <id>com.system76.CosmicApplet</id>
     <binary>cosmic-ext-island</binary>
     <binary>cosmic-ext-island-applet</binary>
   </provides>
   <releases>
+    <release version="0.2.0" date="2026-10-24">
+      <description>
+        <p>Adds Google Calendar events, the weather, a clipboard history, a new home page and lyrics page, a solid background and a mode without animations.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-10-18">
       <description>
         <p>First release.</p>

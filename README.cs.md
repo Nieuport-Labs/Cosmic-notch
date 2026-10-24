@@ -40,6 +40,7 @@ Volby pro vývoj a snímky obrazovky:
 just run --expand=calendar
 ```
 
+
 Animace otevírání napodobuje [Boring Notch](https://boringnotch.com/): pružina (response 0,42 s,
 tlumení 0,8) při otevírání, bez překmitu (tlumení 1,0) při zavírání, obsah se prolne a zvětší od horního okraje.
 
@@ -88,15 +89,19 @@ Odinstalace: `just uninstall`.
   přejmenuje, ikona koše vedle vybrané přihrádky ji smaže (neprázdnou až po potvrzení; soubory na
   disku zůstanou). Když soubor při tažení podržíš nad názvem přihrádky, přepne se na ni a soubor
   skončí v ní. Vyprázdnění a odeslání jsou ikony v horní liště.
+- **Historie schránky**: po zapnutí v nastavení drží první přihrádka *Schránka* posledních 50
+  kopií (text, obrázky, soubory); kliknutím se kopie vrátí do schránky. Co kopírují správci hesel,
+  se neukládá. Potřebuje přístup ke schránce, který sandbox Flatpaku nedává.
 - **Schránka a text**: v otevřené přihrádce **Ctrl+V** (nebo ikona schránky v liště) vloží, co je ve
   schránce: zkopírované soubory, obrázek (uloží se jako PNG) nebo text. Text jde do přihrádky i
   přetáhnout, třeba označený v prohlížeči. Z textu je kartička s náhledem; vytažením do editoru se
   vloží jako text, do složky jako soubor `.txt`, kliknutím se zkopíruje zpět do schránky. Kliknutí
   na soubor ho otevře. Vložené texty a obrázky se drží v `~/.local/share/cosmic-ext-island/snippets`
   a smažou se, jakmile nejsou v žádné přihrádce.
-- **Domů**: vytížení procesoru s historií, frekvencí a teplotou, rychlost sítě (stahování nahoru,
+- **Domů**: pozdrav podle denní doby s další událostí z Google Kalendáře, vytížení procesoru
+  s historií, frekvencí a teplotou, grafika (AMD a Intel), rychlost sítě (stahování nahoru,
   odesílání dolů), malý přehrávač a jedna karta s pamětí a disky. Pod tím je baterie a doba od
-  zapnutí. Údaje se čtou z `/proc` a `/sys` jednou za sekundu. Síťové disky se vynechávají, protože
+  zapnutí. Které karty se ukážou, se volí v nastavení. Údaje se čtou z `/proc` a `/sys` jednou za sekundu. Síťové disky se vynechávají, protože
   dotaz na volné místo by mohl viset.
 - **Úkoly**: napiš úkol a stiskni Enter. Dvojklik na úkol ho přejmenuje, křížek ho smaže. Po
   odškrtnutí políčko poskočí, text přeškrtne čára, úkol odjede doprava a seznam se zavře; když ho
@@ -106,9 +111,10 @@ Odinstalace: `just uninstall`.
   protokolem [LocalSend](https://localsend.org) (v2), na tomto počítači LocalSend být nemusí; na
   druhém zařízení stačí otevřená aplikace LocalSend. Kliknutím na zařízení se pošle celá přihrádka
   (složky i s obsahem), u zařízení je vidět stav: čeká na přijetí, odesláno x z y, hotovo. Spárovaná
-  zařízení KDE Connect se ukážou tamtéž.
+  zařízení KDE Connect se ukážou tamtéž; u každého je vidět, přes jaký protokol se pošle.
 - **Texty písní**: v záložce Média běží pod názvem aktuální řádek textu; tlačítko s mikrofonem
-  ukáže celý text, časovaný podle skladby. Texty pocházejí z [LRCLIB](https://lrclib.net) – ostrov
+  ukáže stránku s texty: řádek před, aktuální (větší a tučný) a řádek po plynule sjíždějí podle
+  skladby. Kliknutí na řádek přehraje od něj. Texty pocházejí z [LRCLIB](https://lrclib.net) – ostrov
   tam pošle interpreta, název, album a délku skladby, proto jsou ve výchozím stavu vypnuté
   a zapínají se v nastavení. Nalezené texty se
   ukládají do `~/.cache/cosmic-ext-island/lyrics`.
@@ -134,16 +140,33 @@ Nové, přejmenované, odškrtnuté a smazané úkoly jdou do Googlu hned. Sezna
 při otevření záložky Úkoly, každou minutu, dokud je otevřená, a jinak jednou za 10 minut. Úkoly vytvořené bez připojení se nahrají při další
 synchronizaci.
 
+## Počasí
+
+V nastavení zapni **Ukazovat počasí**, napiš město a stiskni Enter. Teplota se pak ukáže vedle času
+(jde vypnout) a domovská stránka má počasí s dnešním maximem a minimem. Údaje jsou z
+[Open-Meteo](https://open-meteo.com), které každých 30 minut dostane souřadnice města.
+
+## Google Kalendář
+
+Po zapnutí **Události z Google Kalendáře** v nastavení se v záložce Kalendář ukážou události
+hlavního kalendáře (den s událostí má tečku, kliknutím na den se vypíšou) a tlačítko **+** přidá
+novou (název, celý den nebo od–do). Přihlášení obstarává GNOME Online Accounts stejně jako u
+úkolů; u účtu nech zapnutý **Kalendář**. Události se stahují při otevření záložky, každou minutu,
+dokud je otevřená, a jinak jednou za 15 minut.
+
 ## Nastavení
 
 Ozubené kolo v rozbaleném ostrově přepne na stránku nastavení přímo v ostrově:
 - které části ostrov má (domů, média, přihrádka, kalendář, úkoly); poslední zapnutá vypnout nejde,
-- synchronizace úkolů s Google Tasks,
 - na kterých monitorech se ostrov zobrazí (stejně jako panel, všechny, aktivní, vybrané),
 - formát hodin (prázdné = podle appletu Čas v COSMICu),
-- prodlevy rozbalení a sbalení,
-- skrytí ostrova, když je na monitoru okno přes celou obrazovku (video, hra); výchozí zapnuto,
-- co ukazovat v kompaktním stavu.
+- prodlevy rozbalení a sbalení, skrytí za oknem přes celou obrazovku, plné pozadí a režim bez
+  animací,
+- počasí (město a jestli se ukazuje i vedle času),
+- co ukazovat v kompaktním stavu,
+- které karty má domovská stránka,
+- historii schránky,
+- Google Tasks a Google Kalendář, texty písní.
 
 Nastavení se ukládá přes cosmic-config pod `io.github.jiricepelka.CosmicExtIsland`.
 

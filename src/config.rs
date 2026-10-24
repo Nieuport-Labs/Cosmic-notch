@@ -8,6 +8,16 @@ use serde::{Deserialize, Serialize};
 pub const APP_ID: &str = "io.github.jiricepelka.CosmicExtIsland";
 pub const CONFIG_VERSION: u64 = 1;
 
+/// Parts of the expanded island that the user can hide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Section {
+    Home,
+    Media,
+    Shelf,
+    Calendar,
+    Tasks,
+}
+
 /// Which outputs show an island.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Outputs {
@@ -21,14 +31,26 @@ pub enum Outputs {
     Named(Vec<String>),
 }
 
-/// Parts of the expanded island that the user can hide.
+/// Cards of the home page that the user can hide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Section {
-    Home,
-    Media,
-    Shelf,
-    Calendar,
-    Tasks,
+pub enum HomeCard {
+    Greeting,
+    Cpu,
+    Gpu,
+    Network,
+    Player,
+    Storage,
+}
+
+impl HomeCard {
+    pub const ALL: [HomeCard; 6] = [
+        HomeCard::Greeting,
+        HomeCard::Cpu,
+        HomeCard::Gpu,
+        HomeCard::Network,
+        HomeCard::Player,
+        HomeCard::Storage,
+    ];
 }
 
 impl Section {
@@ -60,15 +82,34 @@ pub struct IslandConfig {
     pub lyrics: bool,
     /// Sections left out of the expanded island; at least one always stays.
     pub hidden_sections: Vec<Section>,
+    /// Cards left out of the home page.
+    pub hidden_cards: Vec<HomeCard>,
     /// Keep the tasks in step with Google Tasks, through GNOME Online Accounts.
     pub google_tasks: bool,
+    /// Show and add events of Google Calendar, through GNOME Online Accounts.
+    pub google_calendar: bool,
+    /// Keep what is copied on a shelf of its own.
+    pub clipboard_history: bool,
+    /// No springs, fades or slides: everything jumps to where it is going.
+    pub reduce_motion: bool,
     /// Step aside on outputs where a fullscreen window is in front, like the panel.
     pub hide_in_fullscreen: bool,
+    /// A solid background instead of the theme's transparency and frosted glass.
+    pub solid_background: bool,
+    /// Show the weather (from Open-Meteo) for `weather_place`.
+    pub weather: bool,
+    pub weather_place: Option<crate::modules::weather::Place>,
+    /// The weather also in the compact island, next to the time.
+    pub weather_compact: bool,
 }
 
 impl IslandConfig {
     pub fn shows(&self, section: Section) -> bool {
         !self.hidden_sections.contains(&section)
+    }
+
+    pub fn shows_card(&self, card: HomeCard) -> bool {
+        !self.hidden_cards.contains(&card)
     }
 }
 
@@ -86,8 +127,17 @@ impl Default for IslandConfig {
             // Sends what plays to a third party: only when the user asks for it.
             lyrics: false,
             hidden_sections: Vec::new(),
+            hidden_cards: Vec::new(),
             google_tasks: false,
+            google_calendar: false,
+            clipboard_history: false,
+            reduce_motion: false,
             hide_in_fullscreen: true,
+            solid_background: false,
+            // Sends the place to a third party: only when the user asks for it.
+            weather: false,
+            weather_place: None,
+            weather_compact: true,
         }
     }
 }

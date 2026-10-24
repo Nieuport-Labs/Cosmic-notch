@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+pub mod app;
 pub mod applet;
 pub mod config;
-pub mod daemon;
 pub mod i18n;
 pub mod icons;
 pub mod ipc;

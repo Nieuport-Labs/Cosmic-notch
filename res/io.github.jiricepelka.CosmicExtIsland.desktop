@@ -9,4 +9,3 @@ Terminal=false
 Categories=COSMIC;Utility;
 Icon=io.github.jiricepelka.CosmicExtIsland
 NoDisplay=true
-X-GNOME-Autostart-enabled=true

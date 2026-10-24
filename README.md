@@ -14,7 +14,7 @@ A Dynamic Island for the COSMIC desktop (Pop!_OS 24.04). The island sits **over 
 
 It follows your COSMIC theme: interface font, accent color, light/dark mode, transparency, frosted
 glass and corner radius. Changes in COSMIC Settings show up right away. It steps aside for
-fullscreen videos and games.
+fullscreen videos and games. The settings have a solid background and a mode without animations.
 
 ## Parts
 
@@ -76,12 +76,14 @@ folder to submit to that repository, with the manifest pointing at the pushed co
 - **Hover**: after a short delay (300 ms by default) the island opens; it closes when the pointer leaves.
 - **Click**: opens the island and keeps it open. Another click or **Esc** closes it.
 - **Middle click**: play/pause.
-- **Home**: CPU use with history, clock speed and temperature, network speed (download up, upload
-  down), a small player whose background fills as the track plays, and one card with memory and
-  disks. Below that, the battery and uptime.
+- **Home**: a greeting by the time of day with the next event of Google Calendar, CPU use with
+  history, clock speed and temperature, the graphics card (AMD and Intel), network speed, a small
+  player whose background fills as the track plays, and one card with memory and disks. Below
+  that, the battery and uptime. The settings choose which cards show.
 - **Media**: cover, title, seeking and controls. With lyrics switched on in the settings, the line
-  being sung runs under the title and the microphone button shows the whole text, in time with the
-  track. Lyrics come from [LRCLIB](https://lrclib.net); the island sends it the artist, title, album
+  being sung runs under the title and the microphone button shows the lyrics page: the line before,
+  the one being sung (bigger and bold) and the one after scroll with the track. Click a line to
+  play from there. Lyrics come from [LRCLIB](https://lrclib.net); the island sends it the artist, title, album
   and length of the track, so lyrics are off until you switch them on.
 - **Shelf**: drag files onto the island. It opens on the shelf, swells a little and its border
   breathes in the accent color; when you let go, it swallows the file. The shelf shows photo
@@ -94,10 +96,16 @@ folder to submit to that repository, with the manifest pointing at the pushed co
     the clipboard: copied files, an image (kept as PNG) or text. Text can also be dragged in, for
     example selected in a browser. Pasted text and images are kept in
     `~/.local/share/cosmic-ext-island/snippets` and removed once no shelf holds them.
-  - **Send to a device**: the send icon lists devices nearby. The island speaks the
-    [LocalSend](https://localsend.org) protocol (v2) itself; the other device only needs the
-    LocalSend app open. Paired KDE Connect devices show up there too.
-- **Calendar**: the month, with today highlighted and the week number.
+  - **Clipboard history**: switch it on in the settings and the first shelf, *Clipboard*, keeps the
+    last 50 things you copied (text, images, files); a click copies one back. What password
+    managers copy is never kept. It needs clipboard access, which a Flatpak's sandbox doesn't
+    give.
+  - **Send to a device**: the send icon lists devices nearby, each with the protocol it is reached
+    over. The island speaks the [LocalSend](https://localsend.org) protocol (v2) itself; the other
+    device only needs the LocalSend app open. Paired KDE Connect devices show up there too.
+- **Calendar**: the month, with today highlighted. With Google Calendar switched on in the
+  settings, days that have events get a dot, a click on a day lists its events and **+** adds one
+  (title, all day or from–to), through GNOME Online Accounts like Google Tasks.
 - **Tasks**: type a task and press Enter. A double click renames it, the cross deletes it. A ticked
   task is struck through and slides away; untick it in time and it stays. Tasks are kept in
   cosmic-config state (`~/.local/state/cosmic/io.github.jiricepelka.CosmicExtIsland`).
@@ -123,16 +131,34 @@ password.
 New, renamed, ticked and deleted tasks go to Google right away. Google's list is fetched when the
 Tasks tab opens, every minute while it is open, and every 10 minutes otherwise.
 
+## Weather
+
+Switch on **Show the weather** in the settings, type a city and press Enter. The temperature then
+shows next to the time (unless you switch that off) and the home page has the weather with today's
+high and low. It comes from [Open-Meteo](https://open-meteo.com), which gets the coordinates of the
+city, every 30 minutes.
+
+## Google Calendar
+
+With **Google Calendar events** switched on in the settings, the calendar tab shows the events of
+your main calendar (a day with events has a dot; click a day to list them) and **+** adds one
+(title, all day or from–to). GNOME Online Accounts signs in, as for tasks; keep **Calendar** on for
+the account. Events are fetched when the tab opens, every minute while it is open and every 15
+minutes otherwise.
+
 ## Settings
 
 The gear in the open island shows the settings inside the island:
 - which sections the island has (home, media, shelf, calendar, tasks); the last one can't be switched off,
 - which displays show the island (same as the panel, all, the active one, selected ones),
 - the clock format (empty follows the COSMIC Time applet),
-- the delays before opening and closing,
-- hiding the island when a window is fullscreen on its display (on by default),
+- the delays before opening and closing, hiding behind fullscreen windows, a solid background
+  and a mode without animations,
+- the weather (a city, and whether it shows next to the time),
 - what the compact island shows,
-- Google Tasks sync and lyrics.
+- which cards the home page has,
+- the clipboard history,
+- Google Tasks and Google Calendar, and lyrics.
 
 Settings are stored with cosmic-config under `io.github.jiricepelka.CosmicExtIsland`.
 
@@ -148,6 +174,7 @@ handy for screenshots:
 ```bash
 just run --expand=calendar
 ```
+
 
 The opening animation follows [Boring Notch](https://boringnotch.com/): a spring (response 0.42 s,
 damping 0.8) when opening and no overshoot (damping 1.0) when closing; the content fades and grows

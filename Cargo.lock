@@ -718,6 +718,7 @@ dependencies = [
  "js-sys",
  "num-traits",
  "pure-rust-locales",
+ "serde",
  "wasm-bindgen",
  "windows-link 0.2.1",
 ]
@@ -953,7 +954,7 @@ dependencies = [
 
 [[package]]
 name = "cosmic-ext-island"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "futures-util",
@@ -974,6 +975,8 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "wayland-client",
+ "wayland-protocols-wlr",
  "zbus",
 ]
 

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! The island daemon: one overlay layer surface per output, drawn over the top panel.
+//! The island daemon: one overlay layer surface per output, drawn over the
+//! top panel. The panel applet keeps room for it and starts it.
 
+mod events;
 mod home;
 mod settings;
 mod sync;
@@ -22,7 +24,7 @@ use cosmic::iced::platform_specific::runtime::wayland::layer_surface::{
     IcedMargin, IcedOutput, SctkLayerSurfaceSettings,
 };
 use cosmic::iced::platform_specific::shell::commands::{
-    blur::blur, layer_surface::set_keyboard_interactivity,
+    blur::blur,
 };
 use cosmic::iced::{Color, Size, Subscription, window};
 use cosmic::surface::action::{app_layer_shell, destroy_layer_shell};
@@ -30,12 +32,13 @@ use cosmic::Element;
 
 use crate::config::{self, APP_ID, IslandConfig, Outputs, TimeAppletConfig};
 use crate::island::geometry::{self, SizeAnimation};
+use crate::panel::{PANEL_CONFIG_ID, PanelGeometry, PanelKeys};
+use cosmic::applet::cosmic_panel_config::PanelAnchor;
 use crate::modules::clock;
 use crate::modules::google_tasks::Change;
 use crate::modules::lyrics;
 use crate::modules::media::{self, MediaState};
 use crate::modules::shelf::{self, Clip, ShareTarget, UriList};
-use crate::panel::{PANEL_CONFIG_ID, PanelGeometry, PanelKeys};
 
 /// Options for development and screenshots.
 #[derive(Debug, Clone, Default)]
@@ -101,6 +104,9 @@ struct SurfaceState {
     content_since: Instant,
     /// A file is dragged over the island.
     drag_over: bool,
+    /// Bumped whenever a drag enters or leaves a part of the island, so a leave
+    /// followed by an enter (moving from the island onto a shelf's name) is not a leave.
+    drag_generation: u64,
     /// Natural size of the content, before the island swells under a dragged file.
     measured: Size,
     /// When something was dropped on the island, for its flash.
@@ -109,6 +115,8 @@ struct SurfaceState {
 
 /// How much the island swells while a file is held over it.
 const DRAG_SWELL: Size = Size::new(14.0, 8.0);
+/// How long a drag may be away from the island before it counts as having left.
+const DRAG_LEAVE_GRACE: Duration = Duration::from_millis(150);
 /// Push the island gets when it swallows a dropped file, in px/s.
 const DROP_PUSH: (f32, f32) = (-240.0, -160.0);
 /// How long the accent flash after a drop lasts.
@@ -129,6 +137,10 @@ impl SurfaceState {
 
     /// How strongly the border glows in the accent color, 0–1.
     fn glow(&self, now: Instant) -> f32 {
+        if geometry::reduced_motion() {
+            // No breathing or flash: the border just takes the accent while a file is over.
+            return if self.drag_over { 1.0 } else { 0.0 };
+        }
         if self.drag_over {
             let t = now.saturating_duration_since(self.content_since).as_secs_f32();
             return 0.7 + 0.3 * (t * std::f32::consts::TAU * 0.8).cos();
@@ -148,12 +160,17 @@ pub struct Island {
     config: IslandConfig,
     config_handle: Option<cosmic_config::Config>,
     time_config: TimeAppletConfig,
-    panel: PanelGeometry,
+    /// The region: how dates and numbers are written.
     locale: Locale,
+    /// The desktop's language: names of days and months.
+    language: Locale,
     now: DateTime<Local>,
+    panel: PanelGeometry,
     outputs: Vec<OutputEntry>,
     surfaces: HashMap<window::Id, SurfaceState>,
     tab: Tab,
+    /// When the tab last changed, and from which side the new one comes in (−1 left, 1 right).
+    tab_changed: Option<(Instant, f32)>,
     start_expanded: bool,
     media: Option<MediaState>,
     /// Cover art of the current track: its URL and the loaded image.
@@ -163,15 +180,19 @@ pub struct Island {
     /// First day of the month shown in the calendar tab.
     calendar_month: chrono::NaiveDate,
     shelves: shelf::Shelves,
+    /// Session bus connection serving the daemon's interface.
+    dbus: Option<zbus::Connection>,
+    /// Width of the compact island, published for the panel applet.
+    compact_width: u32,
+    /// Why the clipboard history cannot run, when it cannot.
+    clipboard_error: Option<String>,
+    /// The file of a shelf that is being dragged, and the shelf it came from.
+    internal_drag: Option<(usize, String)>,
     /// The shelf whose name is being edited, with the name typed so far.
     renaming: Option<(usize, String)>,
     share_targets: Vec<ShareTarget>,
     /// Where the shelf is kept across restarts.
     state_handle: Option<cosmic_config::Config>,
-    /// Session bus connection serving the daemon's interface.
-    dbus: Option<zbus::Connection>,
-    /// Width of the compact island, published for the panel applet.
-    compact_width: u32,
     /// Levels of the bars next to the playing track.
     bar_levels: crate::modules::audio::Levels,
     /// Thumbnails of shelf files by URI; `None` while loading or when there is none.
@@ -200,6 +221,11 @@ pub struct Island {
     /// When tasks were ticked off, for their leaving animation.
     ticked: HashMap<u64, Instant>,
     google: sync::GoogleSync,
+    calendar: events::CalendarSync,
+    weather: Option<crate::modules::weather::Weather>,
+    /// The place typed in the settings, and what came of looking it up.
+    weather_query: String,
+    weather_status: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -212,6 +238,8 @@ pub enum Message {
     PointerLeft(window::Id),
     HoverElapsed(window::Id, u64),
     PillPressed(window::Id),
+    /// The island lost the keyboard: something else was clicked.
+    Unfocused(window::Id),
     Escape,
     SelectTab(Tab),
     OutputAdded(WlOutput, Option<String>),
@@ -225,11 +253,18 @@ pub enum Message {
     Art(String, Option<std::path::PathBuf>),
     Seek(f32),
     SeekReleased,
+    /// A line of the lyrics was clicked: play from there.
+    SeekTo(Duration),
     AudioLevels(crate::modules::audio::Levels),
     Thumbnail(String, Option<std::path::PathBuf>),
     CalendarShift(i32),
     DragEntered(window::Id),
     DragLeft(window::Id),
+    /// A file held over the island has not come back since it left.
+    DragLeftElapsed(window::Id, u64),
+    /// A file of a shelf is being dragged: its shelf and URI.
+    InternalDragStart(usize, String),
+    InternalDragEnd,
     Dropped(window::Id, Option<Clip>),
     /// Ctrl+V or the paste button: add what is on the clipboard to the shelf.
     Paste,
@@ -246,7 +281,7 @@ pub enum Message {
     ShelfDelete(usize),
     ShelfDeleteCancel,
     /// A file dragged over a shelf's name switches to that shelf.
-    DragOverShelf(usize),
+    DragOverShelf(window::Id, usize),
     Share(usize),
     ShareTargets(Vec<ShareTarget>),
     OpenShare,
@@ -272,6 +307,28 @@ pub enum Message {
     GooglePulled(Result<(String, Vec<(String, String)>), crate::modules::google_tasks::Error>),
     GoogleApplied(Box<sync::Applied>),
     OpenOnlineAccounts,
+    /// Time to fetch the events from Google Calendar.
+    /// Something was copied, or the watcher could not start.
+    Clipboard(crate::modules::clipboard::Event),
+    CalendarSync,
+    CalendarPulled(
+        chrono::NaiveDate,
+        chrono::NaiveDate,
+        Result<(String, Vec<crate::modules::google_calendar::Event>), crate::modules::google_calendar::Error>,
+    ),
+    CalendarSelect(chrono::NaiveDate),
+    EventNew,
+    EventTitle(String),
+    EventAllDay(bool),
+    EventStart(String),
+    EventEnd(String),
+    EventSubmit,
+    EventCancel,
+    EventCreated(Result<crate::modules::google_calendar::Event, crate::modules::google_calendar::Error>),
+    /// Time to look at the weather again.
+    WeatherFetch,
+    WeatherLoaded(Result<crate::modules::weather::Weather, String>),
+    WeatherFound(Result<Option<crate::modules::weather::Place>, String>),
 }
 
 impl cosmic::Application for Island {
@@ -294,29 +351,34 @@ impl cosmic::Application for Island {
         // defaults would blur the transparent area around the pill.
         core.set_auto_blur(cosmic::core::Auto::Window.into());
         core.set_auto_corner_radius(cosmic::core::Auto::Window.into());
-
+        let config: IslandConfig = config::load(APP_ID, config::CONFIG_VERSION);
+        geometry::set_reduced_motion(config.reduce_motion);
         let island = Self {
             core,
-            config: config::load(APP_ID, config::CONFIG_VERSION),
+            config,
             config_handle: cosmic_config::Config::new(APP_ID, config::CONFIG_VERSION).ok(),
             time_config: config::load(config::TIME_APPLET_ID, 1),
             panel: PanelGeometry::load(),
             locale: clock::system_locale(),
+            language: clock::language_locale(),
             now: Local::now(),
             outputs: Vec::new(),
             surfaces: HashMap::new(),
             tab: flags.expand.unwrap_or_default(),
+            tab_changed: None,
             start_expanded: flags.expand.is_some(),
             media: None,
             art: None,
             seeking: None,
             calendar_month: crate::modules::calendar::shift_month(Local::now().date_naive(), 0),
             shelves: shelf::Shelves::new(crate::fl!("shelf-default")),
+            internal_drag: None,
+            dbus: None,
+            compact_width: 0,
+            clipboard_error: None,
             renaming: None,
             share_targets: Vec::new(),
             state_handle: cosmic_config::Config::new_state(APP_ID, config::CONFIG_VERSION).ok(),
-            dbus: None,
-            compact_width: 0,
             bar_levels: [0.0; crate::modules::audio::BANDS],
             thumbnails: HashMap::new(),
             landed: HashMap::new(),
@@ -332,17 +394,27 @@ impl cosmic::Application for Island {
             todo_editing: None,
             ticked: HashMap::new(),
             google: Default::default(),
+            calendar: events::CalendarSync::new(Local::now().date_naive()),
+            weather: None,
+            weather_query: String::new(),
+            weather_status: None,
         };
         let mut island = island;
         if flags.expand.is_none() {
             island.tab = island.first_tab();
         }
         island.load_shelf();
+        if island.config.clipboard_history {
+            island.shelves.enable_history(crate::fl!("clipboard"));
+        }
         island.load_todos();
         crate::modules::system::start();
         let thumbnails = island.load_thumbnails();
         let sync = island.sync_tasks();
-        (island, Task::batch([thumbnails, detect_share_targets(), sync]))
+        let calendar = island.sync_calendar();
+        island.weather_query = island.config.weather_place.as_ref().map(|p| p.name.clone()).unwrap_or_default();
+        let weather = island.fetch_weather();
+        (island, Task::batch([thumbnails, detect_share_targets(), sync, calendar, weather]))
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -357,7 +429,6 @@ impl cosmic::Application for Island {
                 return self.sync_surfaces(Instant::now());
             }
             Message::Measured(id, size) => {
-                tracing::debug!("island content measures {size:?}");
                 if let Some(state) = self.surfaces.get_mut(&id) {
                     state.measured = size;
                     state.anim.go(state.target(), Instant::now());
@@ -369,7 +440,6 @@ impl cosmic::Application for Island {
                 }
             }
             Message::PointerEntered(id) => {
-                tracing::debug!("pointer entered {id:?}");
                 let delay = Duration::from_millis(self.config.hover_delay_ms);
                 if let Some(state) = self.surfaces.get_mut(&id) {
                     state.hovered = true;
@@ -380,7 +450,6 @@ impl cosmic::Application for Island {
                 }
             }
             Message::PointerLeft(id) => {
-                tracing::debug!("pointer left {id:?}");
                 let delay = Duration::from_millis(self.config.collapse_delay_ms);
                 if let Some(state) = self.surfaces.get_mut(&id) {
                     state.hovered = false;
@@ -410,6 +479,17 @@ impl cosmic::Application for Island {
                     }
                 }
             }
+            Message::Unfocused(id) => {
+                // A click elsewhere closes the island the user opened with a click.
+                if let Some(state) = self.surfaces.get_mut(&id)
+                    && state.expanded
+                    && state.pinned
+                    && !state.drag_over
+                {
+                    state.pinned = false;
+                    return self.set_expanded(id, false);
+                }
+            }
             Message::Escape => {
                 let ids: Vec<_> = self
                     .surfaces
@@ -428,9 +508,17 @@ impl cosmic::Application for Island {
                 if !self.shows(tab) {
                     return Task::none();
                 }
+                if tab != self.tab {
+                    // Tabs further right come in from the right.
+                    let order = |t: Tab| Tab::SECTIONS.iter().position(|s| *s == t).unwrap_or(Tab::SECTIONS.len());
+                    let side = if order(tab) > order(self.tab) { 1.0 } else { -1.0 };
+                    self.tab_changed = Some((Instant::now(), side));
+                }
                 self.tab = tab;
                 match tab {
                     Tab::Shelf => return detect_share_targets(),
+                    Tab::Calendar => return self.sync_calendar(),
+                    Tab::Media => return self.load_lyrics(),
                     Tab::Tasks => {
                         return Task::batch([
                             cosmic::widget::text_input::focus(todo::new_task_input_id()),
@@ -461,6 +549,7 @@ impl cosmic::Application for Island {
                 return Task::batch(surfaces.into_iter().map(|id| self.destroy_surface(id)));
             }
             Message::Config(config) => {
+                geometry::set_reduced_motion(config.reduce_motion);
                 let outputs_changed = config.outputs != self.config.outputs;
                 let layer_changed = config.hide_in_fullscreen != self.config.hide_in_fullscreen;
                 self.config = config;
@@ -530,6 +619,19 @@ impl cosmic::Application for Island {
             Message::Seek(seconds) => {
                 self.seeking = Some(seconds);
             }
+            Message::SeekTo(position) => {
+                if let Some(state) = &mut self.media {
+                    state.position = position;
+                    state.position_at = Instant::now();
+                    let (player, track_id) = (state.player.clone(), state.track_id.clone());
+                    return cosmic::iced::Task::<()>::future(media::command(
+                        player,
+                        track_id,
+                        media::Command::SetPosition(position),
+                    ))
+                    .discard();
+                }
+            }
             Message::SeekReleased => {
                 if let Some(seconds) = self.seeking.take()
                     && let Some(state) = &mut self.media
@@ -559,6 +661,7 @@ impl cosmic::Application for Island {
                 let task = self.set_expanded(id, true);
                 if let Some(state) = self.surfaces.get_mut(&id) {
                     state.drag_over = true;
+                    state.drag_generation += 1;
                     state.hovered = true;
                     state.hover_generation += 1;
                     state.anim.go(state.target(), Instant::now());
@@ -566,19 +669,51 @@ impl cosmic::Application for Island {
                 return task;
             }
             Message::DragLeft(id) => {
+                // Moving onto a shelf's name leaves the island and enters it again at once.
                 if let Some(state) = self.surfaces.get_mut(&id) {
+                    state.drag_generation += 1;
+                    return delayed(
+                        DRAG_LEAVE_GRACE,
+                        Message::DragLeftElapsed(id, state.drag_generation),
+                    );
+                }
+            }
+            Message::DragLeftElapsed(id, generation) => {
+                if let Some(state) = self.surfaces.get_mut(&id)
+                    && generation == state.drag_generation
+                    && state.drag_over
+                {
                     state.drag_over = false;
                     state.anim.go(state.target(), Instant::now());
+                    return self.update(Message::PointerLeft(id));
                 }
-                return self.update(Message::PointerLeft(id));
+            }
+            Message::InternalDragStart(shelf, uri) => {
+                self.internal_drag = Some((shelf, uri));
+            }
+            Message::InternalDragEnd => {
+                self.internal_drag = None;
             }
             Message::Dropped(id, clip) => {
                 let now = Instant::now();
                 if let Some(state) = self.surfaces.get_mut(&id) {
                     // The island swallows the file: a short dip back to its size.
                     state.drag_over = false;
+                    state.drag_generation += 1;
                     state.dropped_at = clip.is_some().then_some(now);
                     state.anim.bounce(state.target(), DROP_PUSH, now);
+                }
+                if let Some((from, uri)) = self.internal_drag.take() {
+                    // A file of one shelf dropped on another moves there.
+                    if from == self.shelves.current {
+                        return Task::none();
+                    }
+                    let task = self.add_clip(clip);
+                    if let Some(shelf) = self.shelves.list.get_mut(from) {
+                        shelf.items.retain(|i| i.uri != uri);
+                    }
+                    self.save_shelf();
+                    return task;
                 }
                 return self.add_clip(clip);
             }
@@ -620,8 +755,15 @@ impl cosmic::Application for Island {
                 self.confirm_delete = None;
                 self.save_shelf();
             }
-            Message::DragOverShelf(index) => {
+            Message::DragOverShelf(id, index) => {
+                // Still over the island, only on a different part of it: nothing to leave.
                 self.shelves.select(index);
+                if let Some(state) = self.surfaces.get_mut(&id) {
+                    state.drag_over = true;
+                    state.drag_generation += 1;
+                    state.hovered = true;
+                    state.hover_generation += 1;
+                }
             }
             Message::ShelfCreate => {
                 let number = self.shelves.list.len() + 1;
@@ -764,7 +906,6 @@ impl cosmic::Application for Island {
                 std::process::exit(0);
             }
             Message::Ipc(crate::ipc::Event::Toggle) => {
-                tracing::debug!("toggle requested over D-Bus");
                 let expand = !self.surfaces.values().any(|s| s.expanded);
                 let ids: Vec<_> = self.surfaces.keys().copied().collect();
                 return Task::batch(ids.into_iter().map(|id| {
@@ -788,6 +929,12 @@ impl cosmic::Application for Island {
                 self.todos.set_done(id, done);
                 self.save_todos();
                 let google = self.push_change(id, |id| Change::Complete { id, done });
+                if done && geometry::reduced_motion() {
+                    // Nothing to strike through or slide away.
+                    self.todos.remove(id);
+                    self.save_todos();
+                    return google;
+                }
                 if done {
                     // Strike it through and let it leave, then remove it.
                     self.ticked.insert(id, Instant::now());
@@ -859,7 +1006,67 @@ impl cosmic::Application for Island {
             Message::CalendarShift(delta) => {
                 self.calendar_month =
                     crate::modules::calendar::shift_month(self.calendar_month, delta);
+                // Today when it is in the month, else the first day.
+                let today = self.now.date_naive();
+                let day = if Island::in_month(self.calendar_month, today) {
+                    today
+                } else {
+                    self.calendar_month
+                };
+                self.select_day(day);
+                return self.sync_calendar();
             }
+            Message::Clipboard(event) => return self.clipboard_event(event),
+            Message::CalendarSync => return self.sync_calendar(),
+            Message::CalendarPulled(from, to, result) => {
+                return self.calendar_pulled(from, to, result);
+            }
+            Message::CalendarSelect(day) => self.select_day(day),
+            Message::EventNew => {
+                self.calendar.form = Some(events::EventForm::new(self.now));
+                return cosmic::widget::text_input::focus(events::event_title_input_id());
+            }
+            Message::EventTitle(text) => {
+                if let Some(form) = &mut self.calendar.form {
+                    form.title = text;
+                }
+            }
+            Message::EventAllDay(all_day) => {
+                if let Some(form) = &mut self.calendar.form {
+                    form.all_day = all_day;
+                }
+            }
+            Message::EventStart(text) => {
+                if let Some(form) = &mut self.calendar.form {
+                    form.start = text;
+                }
+            }
+            Message::EventEnd(text) => {
+                if let Some(form) = &mut self.calendar.form {
+                    form.end = text;
+                }
+            }
+            Message::EventSubmit => return self.submit_event(),
+            Message::EventCancel => self.calendar.form = None,
+            Message::EventCreated(result) => return self.event_created(result),
+            Message::WeatherFetch => return self.fetch_weather(),
+            Message::WeatherLoaded(result) => match result {
+                Ok(weather) => self.weather = Some(weather),
+                Err(err) => tracing::warn!("weather unavailable: {err}"),
+            },
+            Message::WeatherFound(result) => match result {
+                Ok(Some(place)) => {
+                    self.weather_query = place.name.clone();
+                    self.weather_status = None;
+                    self.weather = None;
+                    if let Some(handle) = &self.config_handle {
+                        let _ = self.config.set_weather_place(handle, Some(place));
+                    }
+                    return self.fetch_weather();
+                }
+                Ok(None) => self.weather_status = Some(crate::fl!("weather-not-found")),
+                Err(err) => self.weather_status = Some(crate::fl!("weather-error", error = err)),
+            },
         }
         Task::none()
     }
@@ -889,6 +1096,9 @@ impl cosmic::Application for Island {
         let mut subscriptions = vec![
             Subscription::run_with(tick, clock::ticks).map(|()| Message::Tick),
             cosmic::iced::event::listen_with(|event, status, _| match event {
+                cosmic::iced::Event::PlatformSpecific(PlatformSpecific::Wayland(
+                    wayland::Event::Layer(wayland::LayerEvent::Unfocused, _, id),
+                )) => Some(Message::Unfocused(id)),
                 cosmic::iced::Event::PlatformSpecific(PlatformSpecific::Wayland(
                     wayland::Event::Output(event, output),
                 )) => match event {
@@ -931,22 +1141,24 @@ impl cosmic::Application for Island {
         ];
 
         let now = Instant::now();
+        let animating = !geometry::reduced_motion();
         let receiving = self.surfaces.values().any(|s| s.drag_over);
         let landing = self
             .landed
             .values()
             .any(|at| !geometry::content_transition_done(*at, now));
-        if receiving
+        if animating
+            && (receiving
             || landing
             || self.surfaces.values().any(|s| s.glow(now) > 0.0)
+            || self.tab_changed.is_some_and(|(at, _)| geometry::tab_slide(at, now) > 0.001)
             || self
                 .ticked
                 .values()
                 .any(|at| now.duration_since(*at) < todo::TICK_ANIMATION)
             || self.surfaces.values().any(|s| {
-                s.anim.is_animating(now)
-                    || !geometry::content_transition_done(s.content_since, now)
-            })
+                s.anim.is_animating(now) || !geometry::content_transition_done(s.content_since, now)
+            }))
         {
             subscriptions.push(window::frames().map(|(_, at)| Message::Frame(at)));
         }
@@ -956,9 +1168,24 @@ impl cosmic::Application for Island {
             let every = Duration::from_secs(if tasks_shown { 60 } else { 600 });
             subscriptions.push(cosmic::iced::time::every(every).map(|_| Message::GoogleSync));
         }
+        if self.config.clipboard_history && self.clipboard_error.is_none() {
+            subscriptions
+                .push(Subscription::run(crate::modules::clipboard::watch).map(Message::Clipboard));
+        }
+        if self.config.weather && self.config.weather_place.is_some() {
+            subscriptions.push(
+                cosmic::iced::time::every(Duration::from_secs(30 * 60)).map(|_| Message::WeatherFetch),
+            );
+        }
+        if self.config.google_calendar {
+            // Often while the calendar is on screen, now and then otherwise; opening the tab syncs too.
+            let shown = expanded && self.tab == Tab::Calendar;
+            let every = Duration::from_secs(if shown { 60 } else { 900 });
+            subscriptions.push(cosmic::iced::time::every(every).map(|_| Message::CalendarSync));
+        }
         let sharing = self.share_page
             && self.tab == Tab::Shelf
-            && self.surfaces.values().any(|s| s.expanded);
+            && expanded;
         if sharing {
             subscriptions.push(
                 Subscription::run(crate::modules::localsend::discover).map(Message::DeviceFound),
@@ -968,21 +1195,28 @@ impl cosmic::Application for Island {
             .media
             .as_ref()
             .is_some_and(|m| m.status == media::Status::Playing);
-        // Synced lyrics move on several times a second.
-        let synced_lyrics = matches!(
-            self.lyrics.as_ref().and_then(|(_, l)| l.as_ref()),
-            Some(lyrics::Lyrics::Synced(_))
-        );
+        // Synced lyrics change line now and then: wake up for each, and draw
+        // frames only while the view scrolls to the new line.
         if playing
-            && synced_lyrics
             && self.config.lyrics
             && self.tab == Tab::Media
-            && self.surfaces.values().any(|s| s.expanded)
+            && expanded
+            && let (Some(media), Some((_, Some(lyrics::Lyrics::Synced(lines))))) =
+                (&self.media, &self.lyrics)
         {
-            subscriptions
-                .push(cosmic::iced::time::every(Duration::from_millis(250)).map(|_| Message::Tick));
+            let position = media.position_at(Instant::now());
+            let (current, progress) = lyrics::scroll_progress(lines, position);
+            if progress < 1.0 && !geometry::reduced_motion() {
+                subscriptions.push(window::frames().map(|(_, at)| Message::Frame(at)));
+            }
+            if let Some(wait) = lyrics::until_next_line(lines, position) {
+                subscriptions.push(
+                    Subscription::run_with(NextLine { current, wait }, next_line)
+                        .map(|()| Message::Tick),
+                );
+            }
         }
-        if playing && self.config.show_bars && !self.surfaces.is_empty() {
+        if playing && self.bars_enabled() && !self.surfaces.is_empty() {
             subscriptions
                 .push(Subscription::run(crate::modules::audio::levels).map(Message::AudioLevels));
         }
@@ -1015,6 +1249,23 @@ impl cosmic::Application for Island {
 }
 
 impl Island {
+    /// Whether the media tab shows the lyrics page: the microphone switched it on,
+    /// and the track has lyrics (or they are being looked up).
+    pub(super) fn lyrics_page(&self) -> bool {
+        use crate::modules::lyrics::Lyrics;
+        self.lyrics_view
+            && self.config.lyrics
+            && matches!(
+                self.lyrics.as_ref().map(|(_, l)| l),
+                Some(None | Some(Lyrics::Synced(_) | Lyrics::Plain(_)))
+            )
+    }
+
+    /// Whether the bars next to the track are drawn: they are animation.
+    fn bars_enabled(&self) -> bool {
+        self.config.show_bars && !self.config.reduce_motion
+    }
+
     /// Whether the user keeps this tab in the island.
     fn shows(&self, tab: Tab) -> bool {
         tab.section().is_none_or(|s| self.config.shows(s))
@@ -1043,7 +1294,7 @@ impl Island {
     }
 
     fn clock_text(&self) -> String {
-        clock::format(&self.now, &self.clock_format(), self.locale)
+        clock::format(&self.now, &self.clock_format(), self.language)
     }
 
     /// Tells the background workers what is on screen, so they only wake the
@@ -1053,15 +1304,25 @@ impl Island {
             .media
             .as_ref()
             .is_some_and(|m| m.status == media::Status::Playing);
-        let lyrics_page = self.lyrics_view && self.config.lyrics;
+        let lyrics_page = self.lyrics_page();
         let bars_shown = playing
-            && self.config.show_bars
+            && self.bars_enabled()
             && self.surfaces.values().any(|s| {
-                !s.expanded
-                    || self.tab == Tab::Home
-                    || (self.tab == Tab::Media && !lyrics_page)
+                !s.expanded || self.tab == Tab::Home || (self.tab == Tab::Media && !lyrics_page)
             });
         crate::modules::audio::set_shown(bars_shown);
+        // The graphs are kept while the home page can show them; opening it later
+        // would otherwise start with empty ones.
+        crate::modules::system::set_history_wanted(
+            self.config.shows(config::Section::Home)
+                && (self.config.shows_card(config::HomeCard::Cpu)
+                    || self.config.shows_card(config::HomeCard::Network)),
+        );
+        crate::modules::system::set_gpu_shown(
+            self.tab == Tab::Home
+                && self.surfaces.values().any(|s| s.expanded)
+                && self.config.shows_card(config::HomeCard::Gpu),
+        );
         crate::modules::system::set_detailed(
             self.tab == Tab::Home && self.surfaces.values().any(|s| s.expanded),
         );
@@ -1079,18 +1340,11 @@ impl Island {
         if !expanded {
             state.pinned = false;
             self.share_page = false;
-            // Reopen on the current month.
+            // Reopen on the current month and today.
             self.calendar_month = crate::modules::calendar::shift_month(self.now.date_naive(), 0);
+            self.select_day(self.now.date_naive());
         }
-        // Keyboard focus only while open, so Esc works without stealing focus otherwise.
-        set_keyboard_interactivity(
-            id,
-            if expanded {
-                KeyboardInteractivity::OnDemand
-            } else {
-                KeyboardInteractivity::None
-            },
-        )
+        if expanded { self.load_lyrics() } else { Task::none() }
     }
 
     fn wants_output(&self, entry: &OutputEntry) -> bool {
@@ -1171,6 +1425,7 @@ impl Island {
                 hover_generation: 0,
                 content_since: Instant::now(),
                 drag_over: false,
+                drag_generation: 0,
                 measured: Size::new(height * 3.0, height),
                 dropped_at: None,
             },
@@ -1189,7 +1444,10 @@ impl Island {
                 move |_| SctkLayerSurfaceSettings {
                     id,
                     layer,
-                    keyboard_interactivity: KeyboardInteractivity::None,
+                    // The island takes the keyboard when clicked (not when only
+                    // pointed at), so Esc and typing work, and losing it to a click
+                    // elsewhere closes an island opened with a click.
+                    keyboard_interactivity: KeyboardInteractivity::OnDemand,
                     input_zone: Some(Vec::new()),
                     anchor: Anchor::TOP,
                     output: output.clone(),
@@ -1199,8 +1457,8 @@ impl Island {
                         ..Default::default()
                     },
                     size: Some((
-                        Some(geometry::SURFACE.width as u32),
-                        Some(geometry::SURFACE.height as u32),
+                        Some(geometry::MAX.width as u32),
+                        Some(geometry::MAX.height as u32),
                     )),
                     // Ignore the panel's exclusive zone, so the island sits over the panel.
                     exclusive_zone: -1,
@@ -1222,7 +1480,7 @@ impl Island {
     fn sync_surfaces(&mut self, now: Instant) -> Task<Message> {
         let theme = cosmic::theme::active();
         let radii = view::Radii::from_theme(theme.cosmic());
-        let transparent = theme.transparent;
+        let transparent = theme.transparent && !self.config.solid_background;
         let mut tasks = Vec::new();
         for (&id, state) in &mut self.surfaces {
             let size = state.anim.at(now);
@@ -1230,9 +1488,9 @@ impl Island {
                 continue;
             }
             state.synced = Some(size);
-            tasks.push(set_input_zone(id, vec![geometry::pill_bounds(size)]));
+            tasks.push(set_input_zone(id, vec![geometry::pill_bounds(size, geometry::MAX, PanelAnchor::Top)]));
             let radius = radii.pill(state.expanded);
-            let region = transparent.then(|| geometry::blur_region(size, radius));
+            let region = transparent.then(|| geometry::blur_region(size, radius, geometry::MAX, PanelAnchor::Top));
             tasks.push(blur(id, region).discard());
         }
         Task::batch(tasks)
@@ -1243,6 +1501,7 @@ impl Island {
 const LEGACY_SHELF_KEY: &str = "shelf";
 const SHELVES_KEY: &str = "shelves";
 const CURRENT_SHELF_KEY: &str = "current_shelf";
+const HISTORY_KEY: &str = "clipboard_shelf";
 const TASKS_KEY: &str = "tasks";
 
 pub fn shelf_name_input_id() -> cosmic::widget::Id {
@@ -1267,7 +1526,10 @@ impl Island {
             self.lyrics = None;
             return Task::none();
         };
-        if !self.config.lyrics {
+        // Only looked up where they would show: on the media tab.
+        if !self.config.lyrics
+            || !(self.surfaces.values().any(|s| s.expanded) && self.tab == Tab::Media)
+        {
             return Task::none();
         }
         if self.lyrics.as_ref().is_some_and(|(t, _)| *t == track) {
@@ -1310,6 +1572,7 @@ impl Island {
         };
         let current = handle.get(CURRENT_SHELF_KEY).unwrap_or(0);
         self.shelves = shelf::Shelves::from_stored(stored, current, default_name);
+        self.shelves.history = handle.get(HISTORY_KEY).unwrap_or(false) && self.shelves.list.len() > 1;
     }
 
     /// Starts making thumbnails for shelf images that have none yet.
@@ -1358,6 +1621,63 @@ impl Island {
         self.load_thumbnails()
     }
 
+    /// Looks at the weather, if it is on and there is a place.
+    pub(super) fn fetch_weather(&self) -> Task<Message> {
+        let (true, Some(place)) = (self.config.weather, self.config.weather_place.clone()) else {
+            return Task::none();
+        };
+        cosmic::task::future(async move {
+            Message::WeatherLoaded(crate::modules::weather::current(place).await)
+        })
+    }
+
+    /// The weather to show, if it is on.
+    pub(super) fn shown_weather(&self) -> Option<crate::modules::weather::Weather> {
+        self.config.weather.then_some(self.weather).flatten()
+    }
+
+    /// Keeps a copy on the clipboard shelf.
+    fn clipboard_event(&mut self, event: crate::modules::clipboard::Event) -> Task<Message> {
+        use crate::modules::clipboard::Event;
+        let clip = match event {
+            Event::Unavailable(reason) => {
+                tracing::warn!("clipboard history unavailable: {reason}");
+                self.clipboard_error = Some(reason);
+                return Task::none();
+            }
+            Event::Copied(clip) => clip,
+        };
+        self.clipboard_error = None;
+        let text = match &clip {
+            Clip::Text(text) => Some(text.clone()),
+            _ => None,
+        };
+        // A copy already on the shelf only moves up; no new file.
+        if let Some(text) = &text
+            && self.shelves.bump_history_text(text)
+        {
+            self.save_shelf();
+            return Task::none();
+        }
+        let uris = match clip {
+            Clip::Files(uris) => uris,
+            clip => match shelf::save_snippet(&clip, Local::now()) {
+                Ok(uri) => UriList(vec![uri]),
+                Err(err) => {
+                    tracing::warn!("cannot keep the copied content: {err}");
+                    return Task::none();
+                }
+            },
+        };
+        let now = Instant::now();
+        self.landed.retain(|_, at| now.duration_since(*at) < Duration::from_secs(1));
+        for uri in self.shelves.add_to_history(uris) {
+            self.landed.insert(uri, now);
+        }
+        self.save_shelf();
+        self.load_thumbnails()
+    }
+
     fn load_todos(&mut self) {
         use cosmic_config::ConfigGet;
         if let Some(handle) = &self.state_handle {
@@ -1383,11 +1703,33 @@ impl Island {
         };
         let result = handle
             .set(SHELVES_KEY, self.shelves.to_stored())
-            .and_then(|()| handle.set(CURRENT_SHELF_KEY, self.shelves.current));
+            .and_then(|()| handle.set(CURRENT_SHELF_KEY, self.shelves.current))
+            .and_then(|()| handle.set(HISTORY_KEY, self.shelves.history));
         if let Err(err) = result {
             tracing::warn!("failed to save the shelves: {err}");
         }
     }
+}
+
+/// Wakes up when the next line of the lyrics starts. Identified by the line
+/// being sung, so it is set anew whenever that changes.
+struct NextLine {
+    current: Option<usize>,
+    wait: Duration,
+}
+
+impl std::hash::Hash for NextLine {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.current.hash(state);
+    }
+}
+
+fn next_line(next: &NextLine) -> impl cosmic::iced::futures::Stream<Item = ()> + use<> {
+    // A moment late, so the line has started when we look.
+    let wait = next.wait + Duration::from_millis(30);
+    cosmic::iced::futures::stream::once(async move {
+        tokio::time::sleep(wait).await;
+    })
 }
 
 fn detect_share_targets() -> Task<Message> {

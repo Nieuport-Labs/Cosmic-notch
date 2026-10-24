@@ -4,7 +4,7 @@
 //! user's COSMIC theme; nothing here is a fixed color. Every color of the
 //! island's content goes through [`faded`], so content can fade in.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use cosmic::iced::advanced::text::{Ellipsize, EllipsizeHeightLimit, Wrapping};
 use cosmic::iced::clipboard::dnd::DndAction;
@@ -19,11 +19,21 @@ use crate::island::fade::{fade, faded};
 use crate::island::geometry;
 use crate::island::measure::measure;
 use crate::modules::clock;
+use crate::modules::lyrics;
 use crate::modules::media::{self, MediaState, Status};
 use crate::modules::shelf::{Clip, DragOut, Item};
 
 /// Width of the expanded island's content, from the design.
 pub const EXPANDED_WIDTH: f32 = 640.0;
+/// The lyrics page: size of the cover, and of the lines of the song.
+const LYRICS_COVER: f32 = 130.0;
+const LYRICS_LINE: f32 = 40.0;
+const LYRICS_ROWS: usize = 3;
+const LYRICS_HEIGHT: f32 = LYRICS_LINE * LYRICS_ROWS as f32;
+const LYRICS_SMALL: f32 = 14.0;
+const LYRICS_LARGE: f32 = 25.0;
+/// How far a new tab slides in from.
+const TAB_SLIDE: f32 = 56.0;
 /// Size of a file's preview on the shelf; its name is no wider.
 const PREVIEW: f32 = 88.0;
 
@@ -61,10 +71,11 @@ impl Island {
         let content = if expanded {
             self.expanded_view(id, opacity)
         } else {
-            self.compact_view(opacity)
+            self.compact_view(self.panel.compact_height as f32, opacity)
         };
         let content = fade(content, opacity, scale);
 
+        let solid = self.config.solid_background;
         let pill = container(measure(content, move |s| Message::Measured(id, s)))
             .width(Length::Fixed(size.width))
             .height(Length::Fixed(size.height))
@@ -72,7 +83,7 @@ impl Island {
             .align_y(Alignment::Start)
             .clip(true)
             .class(cosmic::theme::Container::custom(move |theme| {
-                pill_style(theme, size, expanded, glow)
+                pill_style(theme, size, expanded, glow, solid)
             }));
 
         let pill = widget::mouse_area(pill)
@@ -96,9 +107,8 @@ impl Island {
             .into()
     }
 
-    fn compact_view(&self, opacity: f32) -> Element<'_, Message> {
+    fn compact_view(&self, height: f32, opacity: f32) -> Element<'_, Message> {
         let spacing = cosmic::theme::spacing();
-        let height = self.panel.compact_height as f32;
         let mut row = widget::Row::new()
             .align_y(Alignment::Center)
             .spacing(spacing.space_xs)
@@ -116,18 +126,36 @@ impl Island {
                 now_playing = now_playing.push(
                     container(
                         widget::text::body(media.label())
+                            .font(cosmic::font::semibold())
                             .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1))),
                     )
                     .max_width(self.config.title_max_width),
                 );
             }
-            if self.config.show_bars && media.status == Status::Playing {
+            if self.bars_enabled() && media.status == Status::Playing {
                 now_playing = now_playing.push(self.bars((height * 0.55).round()));
             }
             row = row.push(now_playing);
         }
 
-        row.push(widget::text::body(self.clock_text())).into()
+        if self.config.weather_compact
+            && let Some(weather) = self.shown_weather()
+        {
+            row = row.push(
+                widget::Row::new()
+                    .push(
+                        widget::icon(icons::named(crate::modules::weather::icon(weather.code, weather.day)))
+                            .size((height * 0.5).round() as u16),
+                    )
+                    .push(
+                        widget::text::body(crate::modules::weather::format_temperature(weather.temperature))
+                            .font(cosmic::font::semibold()),
+                    )
+                    .spacing(spacing.space_xxxs)
+                    .align_y(Alignment::Center),
+            );
+        }
+        row.push(widget::text::body(self.clock_text()).font(cosmic::font::semibold())).into()
     }
 
     /// Album art, or a note icon on a plate when there is none.
@@ -188,13 +216,29 @@ impl Island {
         };
         let spacing = cosmic::theme::spacing();
 
-        if self.lyrics_view && self.config.lyrics {
+        if self.lyrics_page() {
+            // The lyrics get the room: the cover and the track on the left, the
+            // song on the right, running through the middle of the page.
+            let side = widget::Column::new()
+                .push(self.cover(LYRICS_COVER, false, opacity))
+                .push(
+                    widget::text::heading(media.title.clone())
+                        .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(2)))
+                        .width(Length::Fixed(LYRICS_COVER)),
+                )
+                .push(
+                    widget::text::caption(media.artists.clone())
+                        .class(cosmic::theme::Text::Custom(secondary_text))
+                        .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1)))
+                        .width(Length::Fixed(LYRICS_COVER)),
+                )
+                .spacing(spacing.space_xxs);
             return widget::Column::new()
                 .push(
                     widget::Row::new()
-                        .push(self.cover(96.0, false, opacity))
+                        .push(side)
                         .push(self.lyrics_panel(media))
-                        .spacing(spacing.space_s),
+                        .spacing(spacing.space_m),
                 )
                 .push(self.progress(media))
                 .push(self.media_controls(media))
@@ -202,50 +246,92 @@ impl Island {
                 .into();
         }
 
-        // Cover on the left; title, artist and album beside it, and the lines
-        // being sung at the bottom, so the space next to the cover is used.
-        const COVER: f32 = 160.0;
+        // Compact: the cover with the track beside it, and one row with the
+        // controls, the progress and the lyrics button.
+        const COVER: f32 = 96.0;
         let mut title_row = widget::Row::new()
             .push(
-                widget::text::title3(media.title.clone())
-                    .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(2)))
+                widget::text::title4(media.title.clone())
+                    .font(cosmic::font::bold())
+                    .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1)))
                     .width(Length::Fill),
             )
-            .spacing(spacing.space_xs);
-        if media.status == Status::Playing && self.config.show_bars {
-            title_row = title_row.push(self.bars(20.0));
+            .spacing(spacing.space_xs)
+            .align_y(Alignment::Center);
+        if media.status == Status::Playing && self.bars_enabled() {
+            title_row = title_row.push(self.bars(18.0));
         }
-        let mut details = widget::Column::new()
+        let mut artist = media.artists.clone();
+        if let Some(album) = &media.album
+            && !album.is_empty()
+            && *album != media.title
+        {
+            artist = format!("{artist} · {album}");
+        }
+        let details = widget::Column::new()
             .push(title_row)
             .push(
-                widget::text::body(media.artists.clone())
+                widget::text::body(artist)
+                    .font(cosmic::font::semibold())
+                    .class(cosmic::theme::Text::Custom(secondary_text))
                     .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1))),
             )
+            .push(widget::Space::new().height(Length::Fill))
+            .push(self.lyrics_snippet(media))
             .spacing(spacing.space_xxxs)
             .width(Length::Fill)
             .height(Length::Fixed(COVER));
-        if let Some(album) = &media.album {
-            details = details.push(
-                widget::text::caption(album.clone())
-                    .class(cosmic::theme::Text::Custom(secondary_text))
-                    .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1))),
-            );
-        }
-        details = details
-            .push(widget::Space::new().height(Length::Fill))
-            .push(self.lyrics_snippet(media));
-
-        let info = widget::Row::new()
-            .push(self.cover(COVER, false, opacity))
-            .push(details)
-            .spacing(spacing.space_s);
 
         widget::Column::new()
-            .push(info)
-            .push(self.progress(media))
-            .push(self.media_controls(media))
-            .spacing(spacing.space_s)
+            .push(
+                widget::Row::new()
+                    .push(self.cover(COVER, false, opacity))
+                    .push(details)
+                    .spacing(spacing.space_s),
+            )
+            .push(self.compact_controls(media))
+            .spacing(spacing.space_xs)
             .into()
+    }
+
+    /// Previous, play and next, the progress, and the lyrics button, in one row.
+    fn compact_controls(&self, media: &MediaState) -> Element<'_, Message> {
+        let spacing = cosmic::theme::spacing();
+        let button = |icon: &'static str, command: Option<media::Command>| {
+            island_button_sized(icons::named(icon), false, command.map(Message::MediaCommand), 20)
+        };
+        let mut row = widget::Row::new()
+            .push(button(
+                "media-skip-backward-symbolic",
+                media.can_go_previous.then_some(media::Command::Previous),
+            ))
+            .push(button(
+                if media.status == Status::Playing {
+                    "media-playback-pause-symbolic"
+                } else {
+                    "media-playback-start-symbolic"
+                },
+                Some(media::Command::PlayPause),
+            ))
+            .push(button(
+                "media-skip-forward-symbolic",
+                media.can_go_next.then_some(media::Command::Next),
+            ))
+            .push(container(self.progress(media)).width(Length::Fill).padding([0, spacing.space_xs]))
+            .spacing(spacing.space_xxxs)
+            .align_y(Alignment::Center);
+        if self.config.lyrics {
+            row = row.push(widget::tooltip(
+                island_button(
+                    icons::named("audio-input-microphone-symbolic"),
+                    self.lyrics_view,
+                    Message::ToggleLyrics,
+                ),
+                widget::text::caption(fl!("lyrics")),
+                widget::tooltip::Position::Top,
+            ));
+        }
+        row.into()
     }
 
     fn media_controls(&self, media: &MediaState) -> Element<'_, Message> {
@@ -327,62 +413,104 @@ impl Island {
         column.into()
     }
 
-    /// Lyrics of the playing track; synced ones follow the song line by line.
+    /// Lyrics of the playing track; synced ones scroll with the song.
     fn lyrics_panel(&self, media: &MediaState) -> Element<'_, Message> {
-        use crate::modules::lyrics::{self, Lyrics};
-        let spacing = cosmic::theme::spacing();
-        const HEIGHT: f32 = 150.0;
-
+        use crate::modules::lyrics::Lyrics;
         let note = |text: String| -> Element<'_, Message> {
             container(widget::text::body(text).class(cosmic::theme::Text::Custom(secondary_text)))
                 .width(Length::Fill)
-                .height(Length::Fixed(HEIGHT))
+                .height(Length::Fixed(LYRICS_HEIGHT))
                 .align_y(Alignment::Center)
                 .into()
         };
-
-        let body: Element<'_, Message> = match self.lyrics.as_ref().and_then(|(_, l)| l.as_ref()) {
+        match self.lyrics.as_ref().and_then(|(_, l)| l.as_ref()) {
             None => note(fl!("lyrics-loading")),
             Some(Lyrics::NotFound) => note(fl!("lyrics-not-found")),
             Some(Lyrics::Instrumental) => note(fl!("lyrics-instrumental")),
-            Some(Lyrics::Plain(lines)) => widget::scrollable(
-                widget::text::body(lines.join("\n")).width(Length::Fill),
-            )
-            .height(Length::Fixed(HEIGHT))
-            .into(),
-            Some(Lyrics::Synced(lines)) => {
-                let position = media.position_at(Instant::now());
-                let current = lyrics::current_line(lines, position);
-                let first = current.unwrap_or(0).saturating_sub(1);
-                let mut column = widget::Column::new().spacing(spacing.space_xxxs);
-                for (index, (_, text)) in lines.iter().enumerate().skip(first).take(5) {
-                    let text = if text.is_empty() { "♪".to_owned() } else { text.clone() };
-                    column = column.push(if Some(index) == current {
-                        widget::text::title4(text)
-                            .wrapping(Wrapping::WordOrGlyph)
-                            .width(Length::Fill)
-                    } else {
-                        widget::text::body(text)
-                            .class(cosmic::theme::Text::Custom(secondary_text))
-                            .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1)))
-                            .width(Length::Fill)
-                    });
-                }
-                container(column)
-                    .width(Length::Fill)
-                    .height(Length::Fixed(HEIGHT))
-                    .clip(true)
-                    .into()
-            }
-        };
+            Some(Lyrics::Plain(lines)) => widget::Column::new()
+                .push(
+                    widget::scrollable(widget::text::body(lines.join("\n")).width(Length::Fill))
+                        .height(Length::Fixed(LYRICS_HEIGHT)),
+                )
+                .push(self.lyrics_source())
+                .width(Length::Fill)
+                .into(),
+            Some(Lyrics::Synced(lines)) => widget::Column::new()
+                .push(self.synced_lyrics(lines, media))
+                .push(self.lyrics_source())
+                .width(Length::Fill)
+                .into(),
+        }
+    }
 
-        widget::Column::new()
-            .push(body)
-            .push(
-                widget::text::caption(fl!("lyrics-source"))
-                    .class(cosmic::theme::Text::Custom(secondary_text)),
-            )
+    fn lyrics_source(&self) -> Element<'_, Message> {
+        widget::text::caption(fl!("lyrics-source"))
+            .class(cosmic::theme::Text::Custom(secondary_text))
+            .into()
+    }
+
+    /// The song's lines in a column that keeps the line being sung in the
+    /// middle: it grows and brightens as it arrives, the others shrink and
+    /// fade with their distance, and the column slides up when the line changes.
+    fn synced_lyrics(&self, lines: &[(Duration, String)], media: &MediaState) -> Element<'_, Message> {
+        let position = media.position_at(Instant::now());
+        let (current, progress) = lyrics::scroll_progress(lines, position);
+        // Where the middle of the view is, in lines: it moves from the previous line to the current one.
+        let middle = match current {
+            Some(k) => k as f32 - 1.0 + progress,
+            None => -1.0,
+        }
+        .max(-1.0);
+        let base = middle.floor();
+        let first = base as i64 - LYRICS_ROWS as i64 / 2;
+        let theme = cosmic::theme::active();
+        let on: Color = theme.cosmic().background(theme.transparent).on.into();
+        let mut column = widget::Column::new();
+        for row in 0..=LYRICS_ROWS as i64 {
+            let index = first + row;
+            let distance = (index as f32 - middle).abs();
+            let line = usize::try_from(index).ok().and_then(|i| lines.get(i).map(|l| (i, l)));
+            let element: Element<'_, Message> = match line {
+                Some((_, (start, text))) => {
+                    let text = if text.is_empty() { "♪" } else { text.as_str() };
+                    let emphasis = (1.0 - distance).clamp(0.0, 1.0);
+                    let size = LYRICS_SMALL + (LYRICS_LARGE - LYRICS_SMALL) * emphasis;
+                    // Long lines get a smaller size rather than a second line.
+                    let size = size * (28.0 / text.chars().count().max(1) as f32).clamp(0.72, 1.0);
+                    let alpha = 0.4 + 0.6 * emphasis;
+                    let label = widget::text(text.to_owned())
+                        .size(size)
+                        .font(if emphasis > 0.5 {
+                            cosmic::font::semibold()
+                        } else {
+                            cosmic::font::default()
+                        })
+                        .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1)))
+                        .class(cosmic::theme::Text::Color(faded(Color {
+                            a: alpha.clamp(0.12, 1.0),
+                            ..on
+                        })));
+                    // A click on a line plays from there.
+                    widget::mouse_area(
+                        container(label)
+                            .width(Length::Fill)
+                            .height(Length::Fixed(LYRICS_LINE))
+                            .align_y(Alignment::Center),
+                    )
+                    .on_press(Message::SeekTo(*start))
+                    .into()
+                }
+                None => widget::Space::new()
+                    .width(Length::Fill)
+                    .height(Length::Fixed(LYRICS_LINE))
+                    .into(),
+            };
+            column = column.push(element);
+        }
+        container(fade(column, 1.0, 1.0).shifted((middle - base) * LYRICS_LINE))
             .width(Length::Fill)
+            .height(Length::Fixed(LYRICS_HEIGHT))
+            .clip(true)
             .into()
     }
 
@@ -461,7 +589,7 @@ impl Island {
         let header = header
             .push(widget::Space::new().width(Length::Fill))
             .push(self.shelf_actions())
-            .push(widget::text::body(self.clock_text()))
+            .push(widget::text::body(self.clock_text()).font(cosmic::font::semibold()))
             .push(tab(icons::named("emblem-system-symbolic"), Tab::Settings, fl!("settings")))
             .spacing(spacing.space_xxxs)
             .align_y(Alignment::Center);
@@ -473,6 +601,15 @@ impl Island {
             Tab::Calendar => self.calendar_tab(),
             Tab::Tasks => self.tasks_tab(),
             Tab::Settings => self.settings_tab().map(Message::Settings),
+        };
+
+        // A new tab slides in from its side and fades in on the way.
+        let body: Element<'_, Message> = match self.tab_changed {
+            Some((at, side)) => {
+                let left = geometry::tab_slide(at, std::time::Instant::now());
+                fade(body, 1.0 - left, 1.0).slid(side * left * TAB_SLIDE).into()
+            }
+            None => body,
         };
 
         widget::Column::new()
@@ -521,25 +658,13 @@ impl Island {
         let today = self.now.date_naive();
         let first_day = calendar::weekday_from_config(self.time_config.first_day_of_week);
         let month = self.calendar_month;
+        let google = self.config.google_calendar;
         const CELL: f32 = 44.0;
-
-        let today_panel = widget::Column::new()
-            .push(
-                widget::text::heading(clock::format(&self.now, "%A", self.locale))
-                    .class(cosmic::theme::Text::Custom(accent_text)),
-            )
-            .push(widget::text::title1(today.day().to_string()))
-            .push(widget::text::body(calendar::month_title(today, self.locale)))
-            .push(
-                widget::text::caption(fl!("week", number = today.iso_week().week().to_string()))
-                    .class(cosmic::theme::Text::Custom(secondary_text)),
-            )
-            .spacing(spacing.space_xxxs)
-            .width(Length::Fixed(180.0));
+        const DAY: f32 = 28.0;
 
         let header = widget::Row::new()
             .push(
-                widget::text::heading(calendar::month_title(month, self.locale))
+                widget::text::heading(calendar::month_title(month, self.language))
                     .class(cosmic::theme::Text::Custom(accent_text))
                     .width(Length::Fill),
             )
@@ -555,35 +680,39 @@ impl Island {
             ))
             .align_y(Alignment::Center);
 
-        let cell = |content: Element<'static, Message>| {
+        let cell = |content: Element<'static, Message>, height: f32| {
             container(content)
-                // Days share the width left by the today panel.
+                // Days share the width left by the side panel.
                 .width(Length::Fill)
-                .height(Length::Fixed(CELL * 0.8))
+                .height(Length::Fixed(height))
                 .align_x(Alignment::Center)
                 .align_y(Alignment::Center)
         };
 
         let mut grid = widget::Column::new().push(header).spacing(2);
         let mut names = widget::Row::new().width(Length::Fill);
-        for name in calendar::weekday_names(first_day, self.locale) {
+        for name in calendar::weekday_names(first_day, self.language) {
             names = names.push(cell(
                 widget::text::caption(name)
                     .class(cosmic::theme::Text::Custom(secondary_text))
                     .into(),
+                CELL * 0.6,
             ));
         }
         grid = grid.push(names);
+        let row_height = if google { CELL * 0.92 } else { CELL * 0.8 };
         for week in calendar::month_grid(month.year(), month.month(), first_day) {
             let mut row = widget::Row::new().width(Length::Fill);
             for date in week {
                 let Some(date) = date else {
-                    row = row.push(cell(widget::Space::new().into()));
+                    row = row.push(cell(widget::Space::new().into(), row_height));
                     continue;
                 };
-                let label = widget::text::body(date.day().to_string());
+                let label = widget::text::body(date.day().to_string()).font(cosmic::font::semibold());
                 let weekend =
                     matches!(date.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun);
+                let selected = google && date == self.calendar.selected;
+                let size = if google { DAY } else { CELL * 0.75 };
                 let label: Element<'static, Message> = if date == today {
                     container(label.class(cosmic::theme::Text::Custom(|theme| {
                         cosmic::iced::widget::text::Style {
@@ -591,8 +720,8 @@ impl Island {
                             ..Default::default()
                         }
                     })))
-                    .width(Length::Fixed(CELL * 0.75))
-                    .height(Length::Fixed(CELL * 0.75))
+                    .width(Length::Fixed(size))
+                    .height(Length::Fixed(size))
                     .align_x(Alignment::Center)
                     .align_y(Alignment::Center)
                     .class(cosmic::theme::Container::custom(|theme| container::Style {
@@ -604,21 +733,265 @@ impl Island {
                         ..Default::default()
                     }))
                     .into()
-                } else if weekend {
-                    label.class(cosmic::theme::Text::Custom(secondary_text)).into()
+                } else if selected {
+                    container(label)
+                        .width(Length::Fixed(size))
+                        .height(Length::Fixed(size))
+                        .align_x(Alignment::Center)
+                        .align_y(Alignment::Center)
+                        .class(cosmic::theme::Container::custom(|theme| {
+                            plate_style(theme, [CELL; 4])
+                        }))
+                        .into()
                 } else {
-                    label.into()
+                    let label = if weekend {
+                        label.class(cosmic::theme::Text::Custom(secondary_text))
+                    } else {
+                        label
+                    };
+                    // As big as the circle of today, so the hover is that circle too.
+                    container(label)
+                        .width(Length::Fixed(size))
+                        .height(Length::Fixed(size))
+                        .align_x(Alignment::Center)
+                        .align_y(Alignment::Center)
+                        .into()
                 };
-                row = row.push(cell(label));
+                if !google {
+                    row = row.push(cell(label, row_height));
+                    continue;
+                }
+                // A dot under days that have events; days are buttons that pick the day.
+                let dot: Element<'static, Message> = if self.calendar.on(date).is_empty() {
+                    widget::Space::new().height(Length::Fixed(4.0)).into()
+                } else {
+                    container(widget::Space::new())
+                        .width(Length::Fixed(4.0))
+                        .height(Length::Fixed(4.0))
+                        .class(cosmic::theme::Container::custom(|theme| container::Style {
+                            background: Some(faded(theme.cosmic().accent_color()).into()),
+                            border: cosmic::iced::Border {
+                                radius: 2.0.into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }))
+                        .into()
+                };
+                // The button is the day's circle, so its hover is round like the selection.
+                let day = widget::Column::new()
+                    .push(
+                        button::custom(label)
+                            .padding(0)
+                            .class(round_button_class())
+                            .on_press(Message::CalendarSelect(date)),
+                    )
+                    .push(dot)
+                    .spacing(2)
+                    .align_x(Alignment::Center);
+                row = row.push(cell(day.into(), row_height));
             }
             grid = grid.push(row);
         }
 
+        let side: Element<'_, Message> = if google {
+            self.events_panel()
+        } else {
+            widget::Column::new()
+                .push(
+                    widget::text::heading(clock::format(&self.now, "%A", self.language))
+                        .class(cosmic::theme::Text::Custom(accent_text)),
+                )
+                .push(widget::text::title1(today.day().to_string()))
+                .push(widget::text::body(calendar::month_title(today, self.language)))
+                .push(
+                    widget::text::caption(fl!("week", number = today.iso_week().week().to_string()))
+                        .class(cosmic::theme::Text::Custom(secondary_text)),
+                )
+                .spacing(spacing.space_xxxs)
+                .width(Length::Fixed(180.0))
+                .into()
+        };
+
         widget::Row::new()
-            .push(today_panel)
+            .push(side)
             .push(grid.width(Length::Fill))
             .spacing(spacing.space_s)
             .into()
+    }
+
+    /// The side of the calendar with Google Calendar on: the events of the picked day, or the form for a new one.
+    fn events_panel(&self) -> Element<'_, Message> {
+        use crate::modules::calendar;
+        use crate::modules::google_calendar::When;
+        use chrono::Datelike;
+
+        let spacing = cosmic::theme::spacing();
+        let day = self.calendar.selected;
+        const WIDTH: f32 = 230.0;
+        const LIST_HEIGHT: f32 = 150.0;
+
+        let heading = widget::Row::new()
+            .push(
+                widget::Column::new()
+                    .push(
+                        widget::text::heading(clock::format(
+                            &day.and_hms_opt(12, 0, 0).unwrap_or_default().and_utc(),
+                            "%A",
+                            self.language,
+                        ))
+                        .class(cosmic::theme::Text::Custom(accent_text)),
+                    )
+                    .push(
+                        widget::Row::new()
+                            .push(widget::text::title1(day.day().to_string()))
+                            .push(
+                                widget::text::caption(calendar::month_title(day, self.language))
+                                    .class(cosmic::theme::Text::Custom(secondary_text)),
+                            )
+                            .spacing(spacing.space_xxs)
+                            .align_y(Alignment::End),
+                    )
+                    .width(Length::Fill),
+            )
+            .push(island_button(
+                icons::named("list-add-symbolic"),
+                self.calendar.form.is_some(),
+                Message::EventNew,
+            ))
+            .align_y(Alignment::Start);
+
+        let body: Element<'_, Message> = if let Some(form) = &self.calendar.form {
+            let time_input = |value: &str, on_input: fn(String) -> Message| {
+                widget::text_input("12:00", value.to_owned())
+                    .on_input(on_input)
+                    .on_submit(|_| Message::EventSubmit)
+                    .width(Length::Fixed(64.0))
+            };
+            let mut column = widget::Column::new()
+                .push(
+                    widget::text_input(fl!("event-title"), form.title.clone())
+                        .id(super::events::event_title_input_id())
+                        .on_input(Message::EventTitle)
+                        .on_submit(|_| Message::EventSubmit)
+                        .width(Length::Fill),
+                )
+                .push(
+                    widget::Row::new()
+                        .push(widget::text::body(fl!("event-all-day")).width(Length::Fill))
+                        .push(widget::toggler(form.all_day).on_toggle(Message::EventAllDay))
+                        .align_y(Alignment::Center),
+                )
+                .spacing(spacing.space_xxs);
+            if !form.all_day {
+                column = column.push(
+                    widget::Row::new()
+                        .push(widget::text::caption(fl!("event-from")))
+                        .push(time_input(&form.start, Message::EventStart))
+                        .push(widget::text::caption(fl!("event-to")))
+                        .push(time_input(&form.end, Message::EventEnd))
+                        .spacing(spacing.space_xxs)
+                        .align_y(Alignment::Center),
+                );
+            }
+            if let Some(error) = &form.error {
+                column = column.push(
+                    widget::text::caption(error.clone())
+                        .class(cosmic::theme::Text::Custom(error_text)),
+                );
+            }
+            column
+                .push(
+                    widget::Row::new()
+                        .push(widget::Space::new().width(Length::Fill))
+                        .push(widget::button::text(fl!("event-cancel")).on_press(Message::EventCancel))
+                        .push(
+                            widget::button::suggested(fl!("event-add"))
+                                .on_press_maybe((!form.creating).then_some(Message::EventSubmit)),
+                        )
+                        .spacing(spacing.space_xxs),
+                )
+                // As tall as it needs, so the buttons are always there.
+                .into()
+        } else if let Some(note) = self.calendar_note() {
+            container(widget::text::caption(note).class(cosmic::theme::Text::Custom(secondary_text)))
+                .height(Length::Fixed(LIST_HEIGHT))
+                .into()
+        } else {
+            let events = self.calendar.on(day);
+            if events.is_empty() {
+                container(
+                    widget::text::body(fl!("events-none"))
+                        .class(cosmic::theme::Text::Custom(secondary_text)),
+                )
+                .height(Length::Fixed(LIST_HEIGHT))
+                .into()
+            } else {
+                let mut list = widget::Column::new().spacing(spacing.space_xxs);
+                for event in events {
+                    let when = match (event.start, event.end) {
+                        (When::At(start), When::At(end)) => {
+                            format!("{} – {}", start.format("%H:%M"), end.format("%H:%M"))
+                        }
+                        _ => fl!("event-all-day"),
+                    };
+                    let bar = container(widget::Space::new())
+                        .width(Length::Fixed(3.0))
+                        .height(Length::Fill)
+                        .class(cosmic::theme::Container::custom(|theme| container::Style {
+                            background: Some(faded(theme.cosmic().accent_color()).into()),
+                            border: cosmic::iced::Border {
+                                radius: 2.0.into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }));
+                    list = list.push(
+                        widget::Row::new()
+                            .push(bar)
+                            .push(
+                                widget::Column::new()
+                                    .push(
+                                        widget::text::body(if event.title.is_empty() {
+                                            "—".to_owned()
+                                        } else {
+                                            event.title.clone()
+                                        })
+                                        .font(cosmic::font::semibold())
+                                        .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1))),
+                                    )
+                                    .push(
+                                        widget::text::caption(when)
+                                            .class(cosmic::theme::Text::Custom(secondary_text)),
+                                    )
+                                    .width(Length::Fill),
+                            )
+                            .spacing(spacing.space_xs)
+                            .height(Length::Fixed(40.0)),
+                    );
+                }
+                widget::scrollable(list.padding([0, spacing.space_xs, 0, 0]))
+                    .height(Length::Fixed(LIST_HEIGHT))
+                    .into()
+            }
+        };
+
+        widget::Column::new()
+            .push(heading)
+            .push(body)
+            .spacing(spacing.space_xs)
+            .width(Length::Fixed(WIDTH))
+            .into()
+    }
+
+    /// Why no events show, when Google Calendar can't be reached.
+    fn calendar_note(&self) -> Option<String> {
+        use crate::modules::google_calendar::Error;
+        match self.calendar.error.as_ref()? {
+            Error::NoAccount => Some(fl!("events-sign-in")),
+            Error::NoPermission => Some(fl!("google-no-permission")),
+            Error::Other(error) => Some(fl!("google-error", error = error.clone())),
+        }
     }
 
     fn shelf_tab(&self, id: window::Id, opacity: f32) -> Element<'_, Message> {
@@ -725,6 +1098,7 @@ impl Island {
         };
 
         let device_row = |icon: &'static str,
+                          protocol: cosmic::widget::icon::Handle,
                           name: String,
                           detail: String,
                           key: &str,
@@ -742,6 +1116,8 @@ impl Island {
                 )
                 .spacing(spacing.space_xs)
                 .align_y(Alignment::Center);
+            // Which protocol this device is reached over.
+            row = row.push(widget::icon(protocol).size(16));
             if busy(key) {
                 row = row.push(widget::indeterminate_circular().size(18.0));
             }
@@ -755,29 +1131,45 @@ impl Island {
                 .on_press_maybe((!busy(key)).then_some(on_press))
         };
 
-        let mut list = widget::Column::new().spacing(spacing.space_xxxs);
+        // One list of both kinds, by name; each row says which protocol it uses.
+        let mut entries: Vec<(String, Element<'_, Message>)> = Vec::new();
         for device in &self.devices {
             let detail = match &device.info.device_model {
                 Some(model) => format!("{model} · LocalSend"),
                 None => "LocalSend".to_owned(),
             };
-            list = list.push(device_row(
-                device.icon(),
-                device.info.alias.clone(),
-                detail,
-                &device.info.fingerprint,
-                Message::SendTo(device.info.fingerprint.clone()),
+            entries.push((
+                device.info.alias.to_lowercase(),
+                device_row(
+                    device.icon(),
+                    icons::localsend(),
+                    device.info.alias.clone(),
+                    detail,
+                    &device.info.fingerprint,
+                    Message::SendTo(device.info.fingerprint.clone()),
+                )
+                .into(),
             ));
         }
         for (index, target) in self.share_targets.iter().enumerate() {
-            let crate::modules::shelf::ShareTarget::KdeConnect { id, name } = target;
-            list = list.push(device_row(
-                "phone-symbolic",
-                name.clone(),
-                "KDE Connect".to_owned(),
-                id,
-                Message::Share(index),
+            let crate::modules::shelf::ShareTarget::KdeConnect { id, name, .. } = target;
+            entries.push((
+                name.to_lowercase(),
+                device_row(
+                    target.icon(),
+                    icons::kdeconnect(),
+                    name.clone(),
+                    "KDE Connect".to_owned(),
+                    id,
+                    Message::Share(index),
+                )
+                .into(),
             ));
+        }
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut list = widget::Column::new().spacing(spacing.space_xxxs);
+        for (_, row) in entries {
+            list = list.push(row);
         }
 
         // Keeps looking while the page is open; says so below the devices.
@@ -812,6 +1204,7 @@ impl Island {
         for (index, shelf) in self.shelves.list.iter().enumerate() {
             if let Some((editing, name)) = &self.renaming
                 && *editing == index
+                && !self.shelves.is_history(index)
             {
                 row = row.push(
                     widget::text_input("", name.clone())
@@ -825,7 +1218,7 @@ impl Island {
                     false,
                     Message::ShelfRenameCommit,
                 ));
-                if self.shelves.list.len() > 1 {
+                if self.shelves.list.len() > 1 && !self.shelves.is_history(index) {
                     row = row.push(island_button(
                         icons::trash(),
                         false,
@@ -836,10 +1229,16 @@ impl Island {
             }
             let selected = index == self.shelves.current;
             let count = shelf.items.len();
-            let label = if count > 0 {
-                format!("{} · {count}", shelf.name)
+            // The history is named in the language of the moment, not of when it was made.
+            let name = if self.shelves.is_history(index) {
+                fl!("clipboard")
             } else {
                 shelf.name.clone()
+            };
+            let label = if count > 0 {
+                format!("{name} · {count}")
+            } else {
+                name
             };
             let chip = widget::mouse_area(
                 button::custom(widget::text::body(label))
@@ -847,15 +1246,19 @@ impl Island {
                     .class(chip_class(selected))
                     .on_press(Message::ShelfSelect(index)),
             )
-            .on_double_click(Message::ShelfRenameStart(index));
+            .on_double_click(if self.shelves.is_history(index) {
+                Message::ShelfSelect(index)
+            } else {
+                Message::ShelfRenameStart(index)
+            });
             // Dragging a file over a shelf's name switches to it, so it lands there.
             let chip = widget::dnd_destination::dnd_destination_for_data::<Clip, _>(
                 chip,
                 move |clip, _| Message::Dropped(id, clip),
             )
-            .on_enter(move |_, _, _| Message::DragOverShelf(index));
+            .on_enter(move |_, _, _| Message::DragOverShelf(id, index));
             row = row.push(chip);
-            if selected && self.shelves.list.len() > 1 {
+            if selected && self.shelves.list.len() > 1 && !self.shelves.is_history(index) {
                 if self.confirm_delete == Some(index) {
                     row = row.push(
                         button::custom(widget::text::body(fl!("delete-shelf-confirm")))
@@ -921,6 +1324,7 @@ impl Island {
         };
         let (drag_preview, drag_name) = (preview.clone(), name.clone());
         let text = item.text.clone();
+        let (shelf, from_uri) = (self.shelves.current, uri.clone());
         let tile = widget::dnd_source::<Message, DragOut>(
             tile(preview, name, opacity).map(|()| unreachable!("tiles send no messages")),
         )
@@ -938,8 +1342,12 @@ impl Island {
                 -offset,
             )
         })
-        // Dragging a file out leaves it on the shelf: copy, never move.
+        // Dragging a file out leaves it on the shelf: other programs get a copy.
+        // Dropped on another shelf of the island, it moves there.
         .action(DndAction::Copy)
+        .on_start(Some(Message::InternalDragStart(shelf, from_uri)))
+        .on_finish(Some(Message::InternalDragEnd))
+        .on_cancel(Some(Message::InternalDragEnd))
         .window(id);
 
         // A click copies a snippet back to the clipboard, or opens a file.
@@ -1126,6 +1534,27 @@ pub(super) fn button_class(selected: bool) -> cosmic::theme::Button {
     }
 }
 
+/// A flat round button: a faint circle on hover, as round as the selection in the calendar.
+fn round_button_class() -> cosmic::theme::Button {
+    fn style(theme: &cosmic::Theme, plate: f32) -> button::Style {
+        let cosmic = theme.cosmic();
+        let on = cosmic.background(theme.transparent).on;
+        button::Style {
+            background: (plate > 0.0).then(|| faded(Color { a: plate, ..on.into() }).into()),
+            border_radius: 999.0.into(),
+            icon_color: Some(faded(on)),
+            text_color: Some(faded(on)),
+            ..button::Style::new()
+        }
+    }
+    cosmic::theme::Button::Custom {
+        active: Box::new(|_, theme| style(theme, 0.0)),
+        disabled: Box::new(|theme| style(theme, 0.0)),
+        hovered: Box::new(|_, theme| style(theme, 0.1)),
+        pressed: Box::new(|_, theme| style(theme, 0.2)),
+    }
+}
+
 /// COSMIC's standard slider, with colors that fade with the island's content.
 fn slider_class() -> cosmic::theme::iced::Slider {
     use cosmic::iced::widget::slider;
@@ -1218,7 +1647,7 @@ pub(super) fn remove_button_class() -> cosmic::theme::Button {
 pub fn secondary_text(theme: &cosmic::Theme) -> cosmic::iced::widget::text::Style {
     let on = theme.cosmic().background(theme.transparent).on;
     cosmic::iced::widget::text::Style {
-        color: Some(faded(Color { a: 0.6, ..on.into() })),
+        color: Some(faded(Color { a: 0.7, ..on.into() })),
         ..Default::default()
     }
 }
@@ -1226,6 +1655,13 @@ pub fn secondary_text(theme: &cosmic::Theme) -> cosmic::iced::widget::text::Styl
 pub(super) fn accent_text(theme: &cosmic::Theme) -> cosmic::iced::widget::text::Style {
     cosmic::iced::widget::text::Style {
         color: Some(faded(theme.cosmic().accent_text_color())),
+        ..Default::default()
+    }
+}
+
+pub(super) fn error_text(theme: &cosmic::Theme) -> cosmic::iced::widget::text::Style {
+    cosmic::iced::widget::text::Style {
+        color: Some(faded(theme.cosmic().destructive_text_color())),
         ..Default::default()
     }
 }
@@ -1245,9 +1681,15 @@ pub(super) fn plate_style(theme: &cosmic::Theme, radius: [f32; 4]) -> container:
 
 /// The island itself; `glow` (0–1) tints its border and background with the
 /// accent color, while a file is held over it and right after a drop.
-fn pill_style(theme: &cosmic::Theme, size: Size, expanded: bool, glow: f32) -> container::Style {
+fn pill_style(
+    theme: &cosmic::Theme,
+    size: Size,
+    expanded: bool,
+    glow: f32,
+    solid: bool,
+) -> container::Style {
     let cosmic = theme.cosmic();
-    let bg = cosmic.background(theme.transparent);
+    let bg = cosmic.background(theme.transparent && !solid);
     let radius = geometry::pill_radius(Radii::from_theme(cosmic).pill(expanded), size);
     let accent = Color::from(cosmic.accent_color());
     let border_width = 1.0 + glow;

@@ -261,7 +261,12 @@ pub struct Shelf {
 pub struct Shelves {
     pub list: Vec<Shelf>,
     pub current: usize,
+    /// The first shelf is the clipboard history: it can be neither renamed nor deleted.
+    pub history: bool,
 }
+
+/// How many copies the clipboard history keeps.
+pub const HISTORY_LIMIT: usize = 50;
 
 /// How shelves are stored: names with the URIs they hold.
 pub type Stored = Vec<(String, Vec<String>)>;
@@ -275,6 +280,7 @@ impl Shelves {
                 items: Vec::new(),
             }],
             current: 0,
+            history: false,
         }
     }
 
@@ -297,6 +303,7 @@ impl Shelves {
         Self {
             current: current.min(list.len() - 1),
             list,
+            history: false,
         }
     }
 
@@ -351,14 +358,60 @@ impl Shelves {
         let name = name.trim();
         if let Some(shelf) = self.list.get_mut(index)
             && !name.is_empty()
+            && !(self.history && index == 0)
         {
             shelf.name = name.to_owned();
         }
     }
 
+    /// Makes the first shelf the clipboard history, adding it if there is none yet.
+    pub fn enable_history(&mut self, name: String) {
+        if !self.history {
+            self.list.insert(0, Shelf { name, items: Vec::new() });
+            self.current += 1;
+            self.history = true;
+        }
+    }
+
+    /// The history shelf stays as an ordinary shelf, which no longer fills.
+    pub fn disable_history(&mut self) {
+        self.history = false;
+    }
+
+    pub fn is_history(&self, index: usize) -> bool {
+        self.history && index == 0
+    }
+
+    /// Moves a copy of `text` that the history already holds to the front; false if there is none.
+    pub fn bump_history_text(&mut self, text: &str) -> bool {
+        if !self.history {
+            return false;
+        }
+        let Some(position) = self.list[0].items.iter().position(|i| i.text.as_deref() == Some(text))
+        else {
+            return false;
+        };
+        let item = self.list[0].items.remove(position);
+        self.list[0].items.insert(0, item);
+        true
+    }
+
+    /// Puts what was copied at the front of the history. Returns the URIs that are new.
+    pub fn add_to_history(&mut self, uris: UriList) -> Vec<String> {
+        if !self.history {
+            return Vec::new();
+        }
+        for uri in &uris.0 {
+            self.list[0].items.retain(|i| &i.uri != uri);
+        }
+        let new = self.add_to(0, uris);
+        self.list[0].items.truncate(HISTORY_LIMIT);
+        new
+    }
+
     /// Deletes shelf `index`, keeping at least one shelf.
     pub fn delete(&mut self, index: usize) {
-        if self.list.len() <= 1 || index >= self.list.len() {
+        if self.list.len() <= 1 || index >= self.list.len() || self.is_history(index) {
             return;
         }
         self.list.remove(index);
@@ -376,8 +429,9 @@ impl Shelves {
 /// Somewhere files from the shelf can be sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShareTarget {
-    /// A paired KDE Connect device (also served by Valent and GSConnect).
-    KdeConnect { id: String, name: String },
+    /// A paired KDE Connect device (also served by Valent and GSConnect); `kind`
+    /// is the device type KDE Connect reports: `smartphone`, `tablet`, `desktop`, `laptop` or `tv`.
+    KdeConnect { id: String, name: String, kind: String },
 }
 
 const KDECONNECT: &str = "org.kde.kdeconnect";
@@ -386,6 +440,16 @@ impl ShareTarget {
     pub fn label(&self) -> String {
         match self {
             Self::KdeConnect { name, .. } => name.clone(),
+        }
+    }
+
+    /// Icon of the kind of device, from the icon theme.
+    pub fn icon(&self) -> &'static str {
+        let Self::KdeConnect { kind, .. } = self;
+        match kind.as_str() {
+            "desktop" | "laptop" => "computer-symbolic",
+            "tv" => "video-display-symbolic",
+            _ => "phone-symbolic",
         }
     }
 
@@ -461,7 +525,14 @@ pub async fn detect_share_targets() -> Vec<ShareTarget> {
             reply.body().deserialize::<std::collections::HashMap<String, String>>().ok()
         }
         .await;
-        return devices.map(kdeconnect_devices).unwrap_or_default();
+        let mut targets = devices.map(kdeconnect_devices).unwrap_or_default();
+        for target in &mut targets {
+            let ShareTarget::KdeConnect { id, kind, .. } = target;
+            if let Some(found) = kdeconnect_kind(id).await {
+                *kind = found;
+            }
+        }
+        return targets;
     }
     if !in_path("kdeconnect-cli") {
         return Vec::new();
@@ -476,11 +547,32 @@ pub async fn detect_share_targets() -> Vec<ShareTarget> {
     }
 }
 
+/// The type KDE Connect reports for a device.
+async fn kdeconnect_kind(id: &str) -> Option<String> {
+    let connection = super::media::connection().await.ok()?;
+    let reply = connection
+        .call_method(
+            Some(KDECONNECT),
+            format!("/modules/kdeconnect/devices/{id}").as_str(),
+            Some("org.freedesktop.DBus.Properties"),
+            "Get",
+            &("org.kde.kdeconnect.device", "type"),
+        )
+        .await
+        .ok()?;
+    let value: zbus::zvariant::OwnedValue = reply.body().deserialize().ok()?;
+    String::try_from(value).ok()
+}
+
 /// Devices by id, as KDE Connect's daemon lists them, sorted by name.
 fn kdeconnect_devices(devices: std::collections::HashMap<String, String>) -> Vec<ShareTarget> {
     let mut targets: Vec<_> = devices
         .into_iter()
-        .map(|(id, name)| ShareTarget::KdeConnect { id, name })
+        .map(|(id, name)| ShareTarget::KdeConnect {
+            id,
+            name,
+            kind: String::new(),
+        })
         .collect();
     targets.sort_by_key(ShareTarget::label);
     targets
@@ -493,6 +585,7 @@ fn parse_kdeconnect_devices(output: &str) -> impl Iterator<Item = ShareTarget> +
         Some(ShareTarget::KdeConnect {
             id: id.to_owned(),
             name: name.trim().to_owned(),
+            kind: String::new(),
         })
     })
 }
@@ -500,6 +593,25 @@ fn parse_kdeconnect_devices(output: &str) -> impl Iterator<Item = ShareTarget> +
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_keeps_one_copy_and_a_limit() {
+        let mut shelves = Shelves::new("Shelf".into());
+        shelves.enable_history("Clipboard".into());
+        assert_eq!(shelves.current, 1);
+        assert!(!shelves.bump_history_text("hello"));
+        for i in 0..HISTORY_LIMIT + 5 {
+            shelves.add_to_history(UriList(vec![format!("file:///tmp/c{i}")]));
+        }
+        assert_eq!(shelves.list[0].items.len(), HISTORY_LIMIT);
+        // The newest first; copying a file again moves it up.
+        shelves.add_to_history(UriList(vec!["file:///tmp/c10".into()]));
+        assert_eq!(shelves.list[0].items[0].uri, "file:///tmp/c10");
+        assert_eq!(shelves.list[0].items.iter().filter(|i| i.uri == "file:///tmp/c10").count(), 1);
+        // The history shelf stays.
+        shelves.delete(0);
+        assert_eq!(shelves.list.len(), 2);
+    }
 
     #[test]
     fn parses_uri_lists() {
@@ -637,7 +749,8 @@ mod tests {
             devices[0],
             ShareTarget::KdeConnect {
                 id: "abc123".into(),
-                name: "Pixel 8".into()
+                name: "Pixel 8".into(),
+                kind: String::new(),
             }
         );
         assert_eq!(devices.len(), 2);

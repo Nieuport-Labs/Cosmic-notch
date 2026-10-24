@@ -8,23 +8,32 @@ use cosmic::widget::{self, settings};
 use cosmic::Element;
 
 use super::Island;
-use crate::config::{Outputs, Section};
+use crate::config::{HomeCard, Outputs, Section};
 use crate::fl;
 
 #[derive(Debug, Clone)]
 pub enum Message {
     OutputsMode(usize),
     NamedOutput(String, bool),
+    HideInFullscreen(bool),
+    SolidBackground(bool),
+    Weather(bool),
+    WeatherCompact(bool),
+    WeatherQuery(String),
+    WeatherSearch,
     ClockFormat(String),
     HoverDelay(u64),
     CollapseDelay(u64),
-    HideInFullscreen(bool),
     ShowCover(bool),
     ShowTitle(bool),
     ShowBars(bool),
+    ReduceMotion(bool),
     Lyrics(bool),
     ShowSection(Section, bool),
+    ShowCard(HomeCard, bool),
     GoogleTasks(bool),
+    GoogleCalendar(bool),
+    ClipboardHistory(bool),
     OpenOnlineAccounts,
 }
 
@@ -72,19 +81,43 @@ impl Island {
                 self.write(|c, h| c.set_outputs(h, Outputs::Named(names)));
                 return self.reconcile_surfaces();
             }
+            Message::HideInFullscreen(v) => {
+                self.write(|c, h| c.set_hide_in_fullscreen(h, v));
+                return self.recreate_surfaces();
+            }
+            Message::SolidBackground(v) => {
+                self.write(|c, h| c.set_solid_background(h, v));
+                // Blur again, or no more.
+                for state in self.surfaces.values_mut() {
+                    state.synced = None;
+                }
+            }
+            Message::Weather(v) => {
+                self.write(|c, h| c.set_weather(h, v));
+                return self.fetch_weather();
+            }
+            Message::WeatherCompact(v) => self.write(|c, h| c.set_weather_compact(h, v)),
+            Message::WeatherQuery(text) => self.weather_query = text,
+            Message::WeatherSearch => {
+                let query = self.weather_query.trim().to_owned();
+                if query.is_empty() {
+                    return Task::none();
+                }
+                let language = format!("{:?}", self.language).split('_').next().unwrap_or("en").to_owned();
+                return cosmic::task::future(async move {
+                    super::Message::WeatherFound(crate::modules::weather::find_place(query, language).await)
+                });
+            }
             Message::ClockFormat(format) => {
                 let format = (!format.trim().is_empty()).then_some(format);
                 self.write(|c, h| c.set_clock_format(h, format));
             }
             Message::HoverDelay(ms) => self.write(|c, h| c.set_hover_delay_ms(h, ms)),
             Message::CollapseDelay(ms) => self.write(|c, h| c.set_collapse_delay_ms(h, ms)),
-            Message::HideInFullscreen(v) => {
-                self.write(|c, h| c.set_hide_in_fullscreen(h, v));
-                return self.recreate_surfaces();
-            }
             Message::ShowCover(v) => self.write(|c, h| c.set_show_cover(h, v)),
             Message::ShowTitle(v) => self.write(|c, h| c.set_show_title(h, v)),
             Message::ShowBars(v) => self.write(|c, h| c.set_show_bars(h, v)),
+            Message::ReduceMotion(v) => self.write(|c, h| c.set_reduce_motion(h, v)),
             Message::ShowSection(section, show) => {
                 let mut hidden = self.config.hidden_sections.clone();
                 hidden.retain(|s| *s != section);
@@ -96,10 +129,33 @@ impl Island {
                     self.write(|c, h| c.set_hidden_sections(h, hidden));
                 }
             }
+            Message::ShowCard(card, show) => {
+                let mut hidden = self.config.hidden_cards.clone();
+                hidden.retain(|c| *c != card);
+                if !show {
+                    hidden.push(card);
+                }
+                self.write(|c, h| c.set_hidden_cards(h, hidden));
+            }
             Message::GoogleTasks(v) => {
                 self.write(|c, h| c.set_google_tasks(h, v));
                 self.google.error = None;
                 return self.sync_tasks();
+            }
+            Message::ClipboardHistory(v) => {
+                self.write(|c, h| c.set_clipboard_history(h, v));
+                self.clipboard_error = None;
+                if v {
+                    self.shelves.enable_history(fl!("clipboard"));
+                } else {
+                    self.shelves.disable_history();
+                }
+                self.save_shelf();
+            }
+            Message::GoogleCalendar(v) => {
+                self.write(|c, h| c.set_google_calendar(h, v));
+                self.calendar.error = None;
+                return self.sync_calendar();
             }
             Message::OpenOnlineAccounts => {
                 return cosmic::task::message(cosmic::Action::App(super::Message::OpenOnlineAccounts));
@@ -236,6 +292,53 @@ impl Island {
             .add(settings::item(
                 fl!("hide-in-fullscreen"),
                 widget::toggler(config.hide_in_fullscreen).on_toggle(Message::HideInFullscreen),
+            ))
+            .add(
+                widget::Column::new()
+                    .push(settings::item(
+                        fl!("solid-background"),
+                        widget::toggler(config.solid_background).on_toggle(Message::SolidBackground),
+                    ))
+                    .push(widget::text::caption(fl!("solid-background-hint")))
+                    .spacing(spacing.space_xxxs),
+            )
+            .add(
+                widget::Column::new()
+                    .push(settings::item(
+                        fl!("reduce-motion"),
+                        widget::toggler(config.reduce_motion).on_toggle(Message::ReduceMotion),
+                    ))
+                    .push(widget::text::caption(fl!("reduce-motion-hint")))
+                    .spacing(spacing.space_xxxs),
+            );
+
+        let place = match (&self.weather_status, &config.weather_place) {
+            (Some(status), _) => status.clone(),
+            (None, Some(place)) if !place.country.is_empty() => format!("{}, {}", place.name, place.country),
+            (None, Some(place)) => place.name.clone(),
+            (None, None) => fl!("weather-hint"),
+        };
+        let weather = settings::section()
+            .title(fl!("weather"))
+            .add(settings::item(
+                fl!("weather-show"),
+                widget::toggler(config.weather).on_toggle(Message::Weather),
+            ))
+            .add(
+                widget::Column::new()
+                    .push(settings::item(
+                        fl!("weather-place"),
+                        widget::text_input(fl!("weather-place-placeholder"), self.weather_query.clone())
+                            .on_input(Message::WeatherQuery)
+                            .on_submit(|_| Message::WeatherSearch)
+                            .width(Length::Fixed(180.0)),
+                    ))
+                    .push(widget::text::caption(place))
+                    .spacing(spacing.space_xxxs),
+            )
+            .add(settings::item(
+                fl!("weather-compact"),
+                widget::toggler(config.weather_compact).on_toggle(Message::WeatherCompact),
             ));
 
         let compact = settings::section()
@@ -263,13 +366,52 @@ impl Island {
                 .spacing(spacing.space_xxxs),
         );
 
-        let tasks = settings::section().title(fl!("section-tasks")).add(
+        let mut cards = settings::section().title(fl!("home-cards"));
+        for card in HomeCard::ALL {
+            // No card for a graphics card the kernel doesn't report on.
+            if card == HomeCard::Gpu && !crate::modules::system::gpu_present() {
+                continue;
+            }
+            let label = match card {
+                HomeCard::Greeting => fl!("card-greeting"),
+                HomeCard::Cpu => fl!("card-cpu"),
+                HomeCard::Gpu => fl!("card-gpu"),
+                HomeCard::Network => fl!("card-network"),
+                HomeCard::Player => fl!("card-player"),
+                HomeCard::Storage => fl!("card-storage"),
+            };
+            cards = cards.add(settings::item(
+                label,
+                widget::toggler(config.shows_card(card))
+                    .on_toggle(move |show| Message::ShowCard(card, show)),
+            ));
+        }
+
+        let history = settings::section().title(fl!("clipboard")).add(
+            widget::Column::new()
+                .push(settings::item(
+                    fl!("clipboard-history"),
+                    widget::toggler(config.clipboard_history).on_toggle(Message::ClipboardHistory),
+                ))
+                .push(widget::text::caption(match &self.clipboard_error {
+                    Some(_) => fl!("clipboard-unavailable"),
+                    None => fl!("clipboard-hint"),
+                }))
+                .spacing(spacing.space_xxxs),
+        );
+
+        let tasks = settings::section().title(fl!("google")).add(
             widget::Column::new()
                 .push(settings::item(
                     fl!("google-tasks"),
                     widget::toggler(config.google_tasks).on_toggle(Message::GoogleTasks),
                 ))
                 .push(widget::text::caption(self.google_status()))
+                .push(settings::item(
+                    fl!("google-calendar"),
+                    widget::toggler(config.google_calendar).on_toggle(Message::GoogleCalendar),
+                ))
+                .push(widget::text::caption(self.calendar_status()))
                 .push(
                     widget::button::link(fl!("open-online-accounts"))
                         .padding(0)
@@ -285,6 +427,9 @@ impl Island {
                 .push(clock)
                 .push(behavior)
                 .push(compact)
+                .push(cards)
+                .push(weather)
+                .push(history)
                 .push(tasks)
                 .push(lyrics)
                 .spacing(spacing.space_s)

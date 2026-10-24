@@ -1,26 +1,46 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Geometry of the island inside its layer surface.
+//! Geometry of the island inside its popup.
 //!
-//! The layer surface keeps a fixed size large enough for the expanded island,
-//! so the compositor never has to resize it mid-animation. The visible pill is
-//! drawn centered at its top; only the pill takes input and gets blurred.
+//! The popup is as large as the island will become (the popup's input region
+//! cannot change after it is created), and the visible pill is drawn against
+//! the edge of the panel the island hangs from, growing and shrinking inside
+//! it. Only the pill is blurred.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
+use cosmic::applet::cosmic_panel_config::PanelAnchor;
 use cosmic::iced::{Point, Rectangle, Size};
 
-/// Logical size of the layer surface: the largest the island may grow to.
-pub const SURFACE: Size = Size::new(760.0, 540.0);
+/// The largest the island may grow to.
+pub const MAX: Size = Size::new(760.0, 540.0);
 
-/// Bounds of a pill of `size`, horizontally centered at the top of the surface.
-pub fn pill_bounds(size: Size) -> Rectangle {
-    let width = size.width.clamp(0.0, SURFACE.width);
-    let height = size.height.clamp(0.0, SURFACE.height);
-    Rectangle::new(
-        Point::new(((SURFACE.width - width) / 2.0).round(), 0.0),
-        Size::new(width, height),
-    )
+static REDUCED_MOTION: AtomicBool = AtomicBool::new(false);
+
+/// With reduced motion, the island jumps to its size and nothing fades or slides.
+pub fn set_reduced_motion(reduced: bool) {
+    REDUCED_MOTION.store(reduced, Ordering::Relaxed);
+}
+
+pub fn reduced_motion() -> bool {
+    REDUCED_MOTION.load(Ordering::Relaxed)
+}
+
+/// Bounds of a pill of `size` inside a popup of size `surface`, against the
+/// panel's edge and centered along it.
+pub fn pill_bounds(size: Size, surface: Size, anchor: PanelAnchor) -> Rectangle {
+    let width = size.width.clamp(0.0, surface.width);
+    let height = size.height.clamp(0.0, surface.height);
+    let centered_x = ((surface.width - width) / 2.0).round();
+    let centered_y = ((surface.height - height) / 2.0).round();
+    let origin = match anchor {
+        PanelAnchor::Top => Point::new(centered_x, 0.0),
+        PanelAnchor::Bottom => Point::new(centered_x, surface.height - height),
+        PanelAnchor::Left => Point::new(0.0, centered_y),
+        PanelAnchor::Right => Point::new(surface.width - width, centered_y),
+    };
+    Rectangle::new(origin, Size::new(width, height))
 }
 
 /// Corner radius of the pill: the theme radius, but never more than half its height.
@@ -29,11 +49,11 @@ pub fn pill_radius(theme_radius: f32, size: Size) -> f32 {
 }
 
 /// Rounded rectangle split into the strips the background-effect protocol takes as blur region.
-pub fn blur_region(size: Size, radius: f32) -> Vec<Rectangle> {
+pub fn blur_region(size: Size, radius: f32, surface: Size, anchor: PanelAnchor) -> Vec<Rectangle> {
     use cosmic::iced::platform_specific::runtime::wayland::CornerRadius;
     let r = pill_radius(radius, size).round() as u32;
     cosmic::surface::corner_radius::rounded_rect_strips(
-        pill_bounds(size),
+        pill_bounds(size, surface, anchor),
         CornerRadius {
             top_left: r,
             top_right: r,
@@ -117,6 +137,10 @@ impl SizeAnimation {
         if to == self.to {
             return;
         }
+        if reduced_motion() {
+            *self = Self::settled(to);
+            return;
+        }
         let (from, velocity) = self.state(now);
         let grows = to.width * to.height >= from.width * from.height;
         *self = Self {
@@ -130,6 +154,10 @@ impl SizeAnimation {
 
     /// Springs back to `to` after a push with `velocity`: a short dip and return.
     pub fn bounce(&mut self, to: Size, velocity: (f32, f32), now: Instant) {
+        if reduced_motion() {
+            *self = Self::settled(to);
+            return;
+        }
         let (from, _) = self.state(now);
         *self = Self {
             from,
@@ -170,14 +198,30 @@ impl SizeAnimation {
 /// Fading content in: opacity and scale, `since` the content appeared.
 pub fn content_transition(since: Instant, now: Instant) -> (f32, f32) {
     const DURATION: f32 = 0.35;
+    if reduced_motion() {
+        return (1.0, 1.0);
+    }
     let t = (now.saturating_duration_since(since).as_secs_f32() / DURATION).clamp(0.0, 1.0);
     // Smooth ease-in-out, like SwiftUI's `.smooth`.
     let k = t * t * (3.0 - 2.0 * t);
     (k, 0.8 + 0.2 * k)
 }
 
+/// Switching tabs: how far the new content still is from its place, as a
+/// share of the slide (1 at the start, 0 when it is there).
+pub fn tab_slide(since: Instant, now: Instant) -> f32 {
+    const DURATION: f32 = 0.3;
+    if reduced_motion() {
+        return 0.0;
+    }
+    let t = (now.saturating_duration_since(since).as_secs_f32() / DURATION).clamp(0.0, 1.0);
+    // Ease out: quick away, gentle arrival.
+    (1.0 - t).powi(3)
+}
+
 pub fn content_transition_done(since: Instant, now: Instant) -> bool {
-    now.saturating_duration_since(since).as_secs_f32() >= 0.35
+    reduced_motion()
+        || now.saturating_duration_since(since).as_secs_f32() >= 0.35
 }
 
 #[cfg(test)]
@@ -185,16 +229,26 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    const SURFACE: Size = Size::new(760.0, 540.0);
+
     #[test]
-    fn pill_is_centered_at_top() {
-        let b = pill_bounds(Size::new(100.0, 32.0));
-        assert_eq!(b.y, 0.0);
-        assert_eq!(b.x + b.width / 2.0, SURFACE.width / 2.0);
+    fn pill_hangs_from_the_panel_edge() {
+        let size = Size::new(100.0, 32.0);
+        let top = pill_bounds(size, SURFACE, PanelAnchor::Top);
+        assert_eq!(top.y, 0.0);
+        assert_eq!(top.x + top.width / 2.0, SURFACE.width / 2.0);
+        let bottom = pill_bounds(size, SURFACE, PanelAnchor::Bottom);
+        assert_eq!(bottom.y + bottom.height, SURFACE.height);
+        let left = pill_bounds(size, SURFACE, PanelAnchor::Left);
+        assert_eq!(left.x, 0.0);
+        assert_eq!(left.y + left.height / 2.0, SURFACE.height / 2.0);
+        let right = pill_bounds(size, SURFACE, PanelAnchor::Right);
+        assert_eq!(right.x + right.width, SURFACE.width);
     }
 
     #[test]
     fn pill_never_exceeds_surface() {
-        let b = pill_bounds(Size::new(9999.0, 9999.0));
+        let b = pill_bounds(Size::new(9999.0, 9999.0), SURFACE, PanelAnchor::Top);
         assert_eq!(b.size(), SURFACE);
         assert_eq!(b.x, 0.0);
     }
@@ -208,8 +262,8 @@ mod tests {
     #[test]
     fn blur_region_stays_inside_pill() {
         let size = Size::new(120.0, 32.0);
-        let bounds = pill_bounds(size);
-        let strips = blur_region(size, 8.0);
+        let bounds = pill_bounds(size, SURFACE, PanelAnchor::Top);
+        let strips = blur_region(size, 8.0, SURFACE, PanelAnchor::Top);
         assert!(!strips.is_empty());
         for s in strips {
             assert!(s.x >= bounds.x && s.x + s.width <= bounds.x + bounds.width);

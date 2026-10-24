@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use cosmic_ext_island::daemon::{Flags, Tab};
+use cosmic_ext_island::app::{Flags, Tab};
 
 fn main() -> cosmic::iced::Result {
     tracing_subscriber::fmt()
@@ -26,5 +26,5 @@ fn main() -> cosmic::iced::Result {
             other => eprintln!("ignoring unknown argument {other}"),
         }
     }
-    cosmic_ext_island::daemon::run(flags)
+    cosmic_ext_island::app::run(flags)
 }
