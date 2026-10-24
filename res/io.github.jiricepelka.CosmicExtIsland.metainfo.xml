@@ -67,6 +67,7 @@
   </branding>
   <provides>
     <id>com.system76.CosmicApplet</id>
+    <binary>cosmic-ext-island</binary>
     <binary>cosmic-ext-island-applet</binary>
   </provides>
   <releases>

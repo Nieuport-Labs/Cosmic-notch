@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Watches what is copied, for the clipboard history. Needs the compositor's
-//! `wlr-data-control` protocol, which a sandboxed client doesn't get: the
-//! watcher speaks on the connection the panel hands its applets (see
-//! [`crate::ipc::privileged_socket`]). Only runs while the history is on.
+//! Watches what is copied, for the clipboard history, over the compositor's
+//! `wlr-data-control` protocol (which a Flatpak's sandboxed connection doesn't
+//! get). Only runs while the history is on.
 
 use std::collections::HashMap;
 use std::io::Read;
 use std::os::fd::{AsFd, AsRawFd};
-use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -45,9 +43,9 @@ fn connection() -> Result<Connection, String> {
     if let Some(connection) = &*slot {
         return Ok(connection.clone());
     }
-    let fd = crate::ipc::privileged_socket()
-        .ok_or_else(|| "the panel gave this applet no unrestricted connection".to_owned())?;
-    let connection = Connection::from_socket(UnixStream::from(fd)).map_err(|e| e.to_string())?;
+    // The island's own connection belongs to its toolkit; this is a second one,
+    // to the session's display. (In a Flatpak that one is sandboxed and offers no clipboard access.)
+    let connection = Connection::connect_to_env().map_err(|e| e.to_string())?;
     *slot = Some(connection.clone());
     Ok(connection)
 }

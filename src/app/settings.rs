@@ -8,11 +8,15 @@ use cosmic::widget::{self, settings};
 use cosmic::Element;
 
 use super::Island;
-use crate::config::{HomeCard, Section};
+use crate::config::{HomeCard, Outputs, Section};
 use crate::fl;
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    OutputsMode(usize),
+    NamedOutput(String, bool),
+    HideInFullscreen(bool),
+    SolidBackground(bool),
     ClockFormat(String),
     HoverDelay(u64),
     CollapseDelay(u64),
@@ -29,12 +33,61 @@ pub enum Message {
     OpenOnlineAccounts,
 }
 
+const MODE_FOLLOW_PANEL: usize = 0;
+const MODE_ALL: usize = 1;
+const MODE_ACTIVE: usize = 2;
+const MODE_NAMED: usize = 3;
+
+fn mode_of(outputs: &Outputs) -> usize {
+    match outputs {
+        Outputs::FollowPanel => MODE_FOLLOW_PANEL,
+        Outputs::All => MODE_ALL,
+        Outputs::Active => MODE_ACTIVE,
+        Outputs::Named(_) => MODE_NAMED,
+    }
+}
+
 /// Height of the scrolling settings page inside the island.
 const PAGE_HEIGHT: f32 = 360.0;
 
 impl Island {
     pub(super) fn update_settings(&mut self, message: Message) -> Task<super::Message> {
         match message {
+            Message::OutputsMode(mode) => {
+                let outputs = match mode {
+                    MODE_ALL => Outputs::All,
+                    MODE_ACTIVE => Outputs::Active,
+                    MODE_NAMED => Outputs::Named(
+                        self.outputs.iter().filter_map(|o| o.name.clone()).collect(),
+                    ),
+                    _ => Outputs::FollowPanel,
+                };
+                self.write(|c, h| c.set_outputs(h, outputs));
+                return self.reconcile_surfaces();
+            }
+            Message::NamedOutput(name, enabled) => {
+                let mut names = match &self.config.outputs {
+                    Outputs::Named(names) => names.clone(),
+                    _ => Vec::new(),
+                };
+                names.retain(|n| n != &name);
+                if enabled {
+                    names.push(name);
+                }
+                self.write(|c, h| c.set_outputs(h, Outputs::Named(names)));
+                return self.reconcile_surfaces();
+            }
+            Message::HideInFullscreen(v) => {
+                self.write(|c, h| c.set_hide_in_fullscreen(h, v));
+                return self.recreate_surfaces();
+            }
+            Message::SolidBackground(v) => {
+                self.write(|c, h| c.set_solid_background(h, v));
+                // Blur again, or no more.
+                for state in self.surfaces.values_mut() {
+                    state.synced = None;
+                }
+            }
             Message::ClockFormat(format) => {
                 let format = (!format.trim().is_empty()).then_some(format);
                 self.write(|c, h| c.set_clock_format(h, format));
@@ -128,6 +181,37 @@ impl Island {
         let spacing = cosmic::theme::spacing();
         let config = &self.config;
 
+        // Radio buttons rather than a dropdown: a dropdown's menu would hang
+        // outside the island, where clicks fall through to the desktop.
+        let selected = Some(mode_of(&config.outputs));
+        let mut modes = widget::Column::new().spacing(spacing.space_xxs);
+        for (mode, label) in [
+            (MODE_FOLLOW_PANEL, fl!("outputs-follow-panel")),
+            (MODE_ALL, fl!("outputs-all")),
+            (MODE_ACTIVE, fl!("outputs-active")),
+            (MODE_NAMED, fl!("outputs-named")),
+        ] {
+            modes = modes.push(widget::radio(
+                widget::text::body(label),
+                mode,
+                selected,
+                Message::OutputsMode,
+            ));
+        }
+        let mut displays = settings::section()
+            .title(fl!("displays"))
+            .add(settings::item(fl!("show-on"), modes));
+        if let Outputs::Named(names) = &config.outputs {
+            for name in self.outputs.iter().filter_map(|o| o.name.clone()) {
+                let enabled = names.contains(&name);
+                displays = displays.add(settings::item(
+                    name.clone(),
+                    widget::toggler(enabled)
+                        .on_toggle(move |v| Message::NamedOutput(name.clone(), v)),
+                ));
+            }
+        }
+
         // The last shown section can't be switched off, so the island never empties.
         let shown = Section::ALL.iter().filter(|s| config.shows(**s)).count();
         let mut sections = settings::section().title(fl!("sections"));
@@ -185,6 +269,19 @@ impl Island {
                     Message::CollapseDelay,
                 ),
             ))
+            .add(settings::item(
+                fl!("hide-in-fullscreen"),
+                widget::toggler(config.hide_in_fullscreen).on_toggle(Message::HideInFullscreen),
+            ))
+            .add(
+                widget::Column::new()
+                    .push(settings::item(
+                        fl!("solid-background"),
+                        widget::toggler(config.solid_background).on_toggle(Message::SolidBackground),
+                    ))
+                    .push(widget::text::caption(fl!("solid-background-hint")))
+                    .spacing(spacing.space_xxxs),
+            )
             .add(
                 widget::Column::new()
                     .push(settings::item(
@@ -277,6 +374,7 @@ impl Island {
         widget::scrollable(
             widget::Column::new()
                 .push(sections)
+                .push(displays)
                 .push(clock)
                 .push(behavior)
                 .push(compact)

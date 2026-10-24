@@ -18,6 +18,19 @@ pub enum Section {
     Tasks,
 }
 
+/// Which outputs show an island.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Outputs {
+    /// Same outputs as the top panel.
+    #[default]
+    FollowPanel,
+    All,
+    /// The output that currently has focus.
+    Active,
+    /// Outputs by connector name, e.g. `eDP-1`.
+    Named(Vec<String>),
+}
+
 /// Cards of the home page that the user can hide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HomeCard {
@@ -53,6 +66,7 @@ impl Section {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, CosmicConfigEntry)]
 #[version = 1]
 pub struct IslandConfig {
+    pub outputs: Outputs,
     /// chrono format string for the clock; `None` follows the COSMIC time applet.
     pub clock_format: Option<String>,
     /// Delay before the island expands under the pointer, in milliseconds.
@@ -78,6 +92,10 @@ pub struct IslandConfig {
     pub clipboard_history: bool,
     /// No springs, fades or slides: everything jumps to where it is going.
     pub reduce_motion: bool,
+    /// Step aside on outputs where a fullscreen window is in front, like the panel.
+    pub hide_in_fullscreen: bool,
+    /// A solid background instead of the theme's transparency and frosted glass.
+    pub solid_background: bool,
 }
 
 impl IslandConfig {
@@ -93,6 +111,7 @@ impl IslandConfig {
 impl Default for IslandConfig {
     fn default() -> Self {
         Self {
+            outputs: Outputs::default(),
             clock_format: None,
             hover_delay_ms: 300,
             collapse_delay_ms: 400,
@@ -108,6 +127,8 @@ impl Default for IslandConfig {
             google_calendar: false,
             clipboard_history: false,
             reduce_motion: false,
+            hide_in_fullscreen: true,
+            solid_background: false,
         }
     }
 }

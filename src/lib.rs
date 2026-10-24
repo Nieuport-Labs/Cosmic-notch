@@ -8,6 +8,7 @@ pub mod icons;
 pub mod ipc;
 pub mod island;
 pub mod modules;
+pub mod panel;
 pub mod thumbnail;
 
 /// Whether the island runs as a Flatpak, where host programs are started

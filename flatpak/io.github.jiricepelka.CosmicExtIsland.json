@@ -39,6 +39,7 @@
       "buildsystem": "simple",
       "build-commands": [
         "cargo --offline build --release --locked",
+        "install -Dm0755 target/release/cosmic-ext-island /app/bin/cosmic-ext-island",
         "install -Dm0755 target/release/cosmic-ext-island-applet /app/bin/cosmic-ext-island-applet",
         "install -Dm0644 res/io.github.jiricepelka.CosmicExtIsland.desktop /app/share/applications/io.github.jiricepelka.CosmicExtIsland.desktop",
         "install -Dm0644 res/io.github.jiricepelka.CosmicExtIsland.Applet.desktop /app/share/applications/io.github.jiricepelka.CosmicExtIsland.Applet.desktop",
