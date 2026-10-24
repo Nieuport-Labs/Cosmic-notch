@@ -376,8 +376,9 @@ impl Shelves {
 /// Somewhere files from the shelf can be sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShareTarget {
-    /// A paired KDE Connect device (also served by Valent and GSConnect).
-    KdeConnect { id: String, name: String },
+    /// A paired KDE Connect device (also served by Valent and GSConnect); `kind`
+    /// is the device type KDE Connect reports: `smartphone`, `tablet`, `desktop`, `laptop` or `tv`.
+    KdeConnect { id: String, name: String, kind: String },
 }
 
 const KDECONNECT: &str = "org.kde.kdeconnect";
@@ -386,6 +387,16 @@ impl ShareTarget {
     pub fn label(&self) -> String {
         match self {
             Self::KdeConnect { name, .. } => name.clone(),
+        }
+    }
+
+    /// Icon of the kind of device, from the icon theme.
+    pub fn icon(&self) -> &'static str {
+        let Self::KdeConnect { kind, .. } = self;
+        match kind.as_str() {
+            "desktop" | "laptop" => "computer-symbolic",
+            "tv" => "video-display-symbolic",
+            _ => "phone-symbolic",
         }
     }
 
@@ -461,7 +472,14 @@ pub async fn detect_share_targets() -> Vec<ShareTarget> {
             reply.body().deserialize::<std::collections::HashMap<String, String>>().ok()
         }
         .await;
-        return devices.map(kdeconnect_devices).unwrap_or_default();
+        let mut targets = devices.map(kdeconnect_devices).unwrap_or_default();
+        for target in &mut targets {
+            let ShareTarget::KdeConnect { id, kind, .. } = target;
+            if let Some(found) = kdeconnect_kind(id).await {
+                *kind = found;
+            }
+        }
+        return targets;
     }
     if !in_path("kdeconnect-cli") {
         return Vec::new();
@@ -476,11 +494,32 @@ pub async fn detect_share_targets() -> Vec<ShareTarget> {
     }
 }
 
+/// The type KDE Connect reports for a device.
+async fn kdeconnect_kind(id: &str) -> Option<String> {
+    let connection = super::media::connection().await.ok()?;
+    let reply = connection
+        .call_method(
+            Some(KDECONNECT),
+            format!("/modules/kdeconnect/devices/{id}").as_str(),
+            Some("org.freedesktop.DBus.Properties"),
+            "Get",
+            &("org.kde.kdeconnect.device", "type"),
+        )
+        .await
+        .ok()?;
+    let value: zbus::zvariant::OwnedValue = reply.body().deserialize().ok()?;
+    String::try_from(value).ok()
+}
+
 /// Devices by id, as KDE Connect's daemon lists them, sorted by name.
 fn kdeconnect_devices(devices: std::collections::HashMap<String, String>) -> Vec<ShareTarget> {
     let mut targets: Vec<_> = devices
         .into_iter()
-        .map(|(id, name)| ShareTarget::KdeConnect { id, name })
+        .map(|(id, name)| ShareTarget::KdeConnect {
+            id,
+            name,
+            kind: String::new(),
+        })
         .collect();
     targets.sort_by_key(ShareTarget::label);
     targets
@@ -493,6 +532,7 @@ fn parse_kdeconnect_devices(output: &str) -> impl Iterator<Item = ShareTarget> +
         Some(ShareTarget::KdeConnect {
             id: id.to_owned(),
             name: name.trim().to_owned(),
+            kind: String::new(),
         })
     })
 }
@@ -637,7 +677,8 @@ mod tests {
             devices[0],
             ShareTarget::KdeConnect {
                 id: "abc123".into(),
-                name: "Pixel 8".into()
+                name: "Pixel 8".into(),
+                kind: String::new(),
             }
         );
         assert_eq!(devices.len(), 2);

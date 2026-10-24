@@ -795,6 +795,7 @@ impl Island {
         };
 
         let device_row = |icon: &'static str,
+                          protocol: cosmic::widget::icon::Handle,
                           name: String,
                           detail: String,
                           key: &str,
@@ -812,6 +813,8 @@ impl Island {
                 )
                 .spacing(spacing.space_xs)
                 .align_y(Alignment::Center);
+            // Which protocol this device is reached over.
+            row = row.push(widget::icon(protocol).size(16));
             if busy(key) {
                 row = row.push(widget::indeterminate_circular().size(18.0));
             }
@@ -825,29 +828,45 @@ impl Island {
                 .on_press_maybe((!busy(key)).then_some(on_press))
         };
 
-        let mut list = widget::Column::new().spacing(spacing.space_xxxs);
+        // One list of both kinds, by name; each row says which protocol it uses.
+        let mut entries: Vec<(String, Element<'_, Message>)> = Vec::new();
         for device in &self.devices {
             let detail = match &device.info.device_model {
                 Some(model) => format!("{model} · LocalSend"),
                 None => "LocalSend".to_owned(),
             };
-            list = list.push(device_row(
-                device.icon(),
-                device.info.alias.clone(),
-                detail,
-                &device.info.fingerprint,
-                Message::SendTo(device.info.fingerprint.clone()),
+            entries.push((
+                device.info.alias.to_lowercase(),
+                device_row(
+                    device.icon(),
+                    icons::localsend(),
+                    device.info.alias.clone(),
+                    detail,
+                    &device.info.fingerprint,
+                    Message::SendTo(device.info.fingerprint.clone()),
+                )
+                .into(),
             ));
         }
         for (index, target) in self.share_targets.iter().enumerate() {
-            let crate::modules::shelf::ShareTarget::KdeConnect { id, name } = target;
-            list = list.push(device_row(
-                "phone-symbolic",
-                name.clone(),
-                "KDE Connect".to_owned(),
-                id,
-                Message::Share(index),
+            let crate::modules::shelf::ShareTarget::KdeConnect { id, name, .. } = target;
+            entries.push((
+                name.to_lowercase(),
+                device_row(
+                    target.icon(),
+                    icons::kdeconnect(),
+                    name.clone(),
+                    "KDE Connect".to_owned(),
+                    id,
+                    Message::Share(index),
+                )
+                .into(),
             ));
+        }
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut list = widget::Column::new().spacing(spacing.space_xxxs);
+        for (_, row) in entries {
+            list = list.push(row);
         }
 
         // Keeps looking while the page is open; says so below the devices.

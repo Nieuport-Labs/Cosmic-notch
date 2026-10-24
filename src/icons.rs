@@ -31,6 +31,16 @@ pub fn send() -> Handle {
     bundled(include_bytes!("../res/icons/send-symbolic.svg"))
 }
 
+/// Marks devices reached over LocalSend.
+pub fn localsend() -> Handle {
+    bundled(include_bytes!("../res/icons/localsend-symbolic.svg"))
+}
+
+/// Marks devices reached over KDE Connect.
+pub fn kdeconnect() -> Handle {
+    bundled(include_bytes!("../res/icons/kdeconnect-symbolic.svg"))
+}
+
 pub fn house() -> Handle {
     bundled(include_bytes!("../res/icons/house-symbolic.svg"))
 }
