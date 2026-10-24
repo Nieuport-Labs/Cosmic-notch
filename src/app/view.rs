@@ -191,7 +191,7 @@ impl Island {
                     .max_width(self.config.title_max_width),
                 );
             }
-            if self.config.show_bars && media.status == Status::Playing {
+            if self.bars_enabled() && media.status == Status::Playing {
                 now_playing = now_playing.push(self.bars((height * 0.55).round()));
             }
             row = row.push(now_playing);
@@ -282,7 +282,7 @@ impl Island {
                     .width(Length::Fill),
             )
             .spacing(spacing.space_xs);
-        if media.status == Status::Playing && self.config.show_bars {
+        if media.status == Status::Playing && self.bars_enabled() {
             title_row = title_row.push(self.bars(20.0));
         }
         let mut details = widget::Column::new()
@@ -991,6 +991,7 @@ impl Island {
         };
         let (drag_preview, drag_name) = (preview.clone(), name.clone());
         let text = item.text.clone();
+        let (shelf, from_uri) = (self.shelves.current, uri.clone());
         let tile = widget::dnd_source::<Message, DragOut>(
             tile(preview, name, opacity).map(|()| unreachable!("tiles send no messages")),
         )
@@ -1008,8 +1009,12 @@ impl Island {
                 -offset,
             )
         })
-        // Dragging a file out leaves it on the shelf: copy, never move.
+        // Dragging a file out leaves it on the shelf: other programs get a copy.
+        // Dropped on another shelf of the island, it moves there.
         .action(DndAction::Copy)
+        .on_start(Some(Message::InternalDragStart(shelf, from_uri)))
+        .on_finish(Some(Message::InternalDragEnd))
+        .on_cancel(Some(Message::InternalDragEnd))
         .window(id);
 
         // A click copies a snippet back to the clipboard, or opens a file.

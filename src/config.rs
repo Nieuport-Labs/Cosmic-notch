@@ -48,6 +48,8 @@ pub struct IslandConfig {
     pub hidden_sections: Vec<Section>,
     /// Keep the tasks in step with Google Tasks, through GNOME Online Accounts.
     pub google_tasks: bool,
+    /// No springs, fades or slides: everything jumps to where it is going.
+    pub reduce_motion: bool,
 }
 
 impl IslandConfig {
@@ -70,6 +72,7 @@ impl Default for IslandConfig {
             lyrics: false,
             hidden_sections: Vec::new(),
             google_tasks: false,
+            reduce_motion: false,
         }
     }
 }

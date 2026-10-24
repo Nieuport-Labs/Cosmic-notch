@@ -19,6 +19,7 @@ pub enum Message {
     ShowCover(bool),
     ShowTitle(bool),
     ShowBars(bool),
+    ReduceMotion(bool),
     Lyrics(bool),
     ShowSection(Section, bool),
     GoogleTasks(bool),
@@ -40,6 +41,7 @@ impl Island {
             Message::ShowCover(v) => self.write(|c, h| c.set_show_cover(h, v)),
             Message::ShowTitle(v) => self.write(|c, h| c.set_show_title(h, v)),
             Message::ShowBars(v) => self.write(|c, h| c.set_show_bars(h, v)),
+            Message::ReduceMotion(v) => self.write(|c, h| c.set_reduce_motion(h, v)),
             Message::ShowSection(section, show) => {
                 let mut hidden = self.config.hidden_sections.clone();
                 hidden.retain(|s| *s != section);
@@ -157,7 +159,15 @@ impl Island {
                     Message::CollapseDelay,
                 ),
             ))
-            ;
+            .add(
+                widget::Column::new()
+                    .push(settings::item(
+                        fl!("reduce-motion"),
+                        widget::toggler(config.reduce_motion).on_toggle(Message::ReduceMotion),
+                    ))
+                    .push(widget::text::caption(fl!("reduce-motion-hint")))
+                    .spacing(spacing.space_xxxs),
+            );
 
         let compact = settings::section()
             .title(fl!("compact"))

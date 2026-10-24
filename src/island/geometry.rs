@@ -7,6 +7,7 @@
 //! the edge of the panel the island hangs from, growing and shrinking inside
 //! it. Only the pill is blurred.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use cosmic::applet::cosmic_panel_config::PanelAnchor;
@@ -14,6 +15,17 @@ use cosmic::iced::{Point, Rectangle, Size};
 
 /// The largest the island may grow to.
 pub const MAX: Size = Size::new(760.0, 540.0);
+
+static REDUCED_MOTION: AtomicBool = AtomicBool::new(false);
+
+/// With reduced motion, the island jumps to its size and nothing fades or slides.
+pub fn set_reduced_motion(reduced: bool) {
+    REDUCED_MOTION.store(reduced, Ordering::Relaxed);
+}
+
+pub fn reduced_motion() -> bool {
+    REDUCED_MOTION.load(Ordering::Relaxed)
+}
 
 /// Bounds of a pill of `size` inside a popup of size `surface`, against the
 /// panel's edge and centered along it.
@@ -125,6 +137,10 @@ impl SizeAnimation {
         if to == self.to {
             return;
         }
+        if reduced_motion() {
+            *self = Self::settled(to);
+            return;
+        }
         let (from, velocity) = self.state(now);
         let grows = to.width * to.height >= from.width * from.height;
         *self = Self {
@@ -138,6 +154,10 @@ impl SizeAnimation {
 
     /// Springs back to `to` after a push with `velocity`: a short dip and return.
     pub fn bounce(&mut self, to: Size, velocity: (f32, f32), now: Instant) {
+        if reduced_motion() {
+            *self = Self::settled(to);
+            return;
+        }
         let (from, _) = self.state(now);
         *self = Self {
             from,
@@ -178,6 +198,9 @@ impl SizeAnimation {
 /// Fading content in: opacity and scale, `since` the content appeared.
 pub fn content_transition(since: Instant, now: Instant) -> (f32, f32) {
     const DURATION: f32 = 0.35;
+    if reduced_motion() {
+        return (1.0, 1.0);
+    }
     let t = (now.saturating_duration_since(since).as_secs_f32() / DURATION).clamp(0.0, 1.0);
     // Smooth ease-in-out, like SwiftUI's `.smooth`.
     let k = t * t * (3.0 - 2.0 * t);
@@ -185,7 +208,8 @@ pub fn content_transition(since: Instant, now: Instant) -> (f32, f32) {
 }
 
 pub fn content_transition_done(since: Instant, now: Instant) -> bool {
-    now.saturating_duration_since(since).as_secs_f32() >= 0.35
+    reduced_motion()
+        || now.saturating_duration_since(since).as_secs_f32() >= 0.35
 }
 
 #[cfg(test)]

@@ -191,7 +191,7 @@ impl Island {
             )
             .spacing(spacing.space_xxs)
             .align_y(Alignment::Center);
-        if media.status == Status::Playing && self.config.show_bars {
+        if media.status == Status::Playing && self.bars_enabled() {
             title = title.push(self.bars(14.0));
         }
         let controls = widget::Row::new()

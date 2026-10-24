@@ -76,3 +76,5 @@ google-no-account = No Google account found. Add one in Online Accounts and keep
 google-no-permission = The account can't access tasks. Remove it in Online Accounts and add it again.
 google-error = Sync failed: { $error }
 open-online-accounts = Open Online Accounts
+reduce-motion = Reduce motion
+reduce-motion-hint = No springs, fades or slides: the island opens and closes at once and bars stay still.

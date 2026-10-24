@@ -79,3 +79,5 @@ google-no-account = Nenašel jsem Google účet. Přidej ho v Online účtech a 
 google-no-permission = Účet nemá přístup k úkolům. Odeber ho v Online účtech a přidej znovu.
 google-error = Synchronizace selhala: { $error }
 open-online-accounts = Otevřít Online účty
+reduce-motion = Bez animací
+reduce-motion-hint = Žádné pružení, prolínání ani posouvání: ostrov se otevře a zavře hned a pruhy stojí.

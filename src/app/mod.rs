@@ -91,6 +91,9 @@ struct SurfaceState {
     content_since: Instant,
     /// A file is dragged over the island.
     drag_over: bool,
+    /// Bumped whenever a drag enters or leaves a part of the island, so a leave
+    /// followed by an enter (moving from the island onto a shelf's name) is not a leave.
+    drag_generation: u64,
     /// Natural size of the content, before the island swells under a dragged file.
     measured: Size,
     /// When something was dropped on the island, for its flash.
@@ -101,6 +104,8 @@ struct SurfaceState {
 
 /// How much the island swells while a file is held over it.
 const DRAG_SWELL: Size = Size::new(14.0, 8.0);
+/// How long a drag may be away from the island before it counts as having left.
+const DRAG_LEAVE_GRACE: Duration = Duration::from_millis(150);
 /// Push the island gets when it swallows a dropped file, in px/s.
 const DROP_PUSH: (f32, f32) = (-240.0, -160.0);
 /// How long the accent flash after a drop lasts.
@@ -121,6 +126,10 @@ impl SurfaceState {
 
     /// How strongly the border glows in the accent color, 0–1.
     fn glow(&self, now: Instant) -> f32 {
+        if geometry::reduced_motion() {
+            // No breathing or flash: the border just takes the accent while a file is over.
+            return if self.drag_over { 1.0 } else { 0.0 };
+        }
         if self.drag_over {
             let t = now.saturating_duration_since(self.content_since).as_secs_f32();
             return 0.7 + 0.3 * (t * std::f32::consts::TAU * 0.8).cos();
@@ -161,6 +170,8 @@ pub struct Island {
     /// First day of the month shown in the calendar tab.
     calendar_month: chrono::NaiveDate,
     shelves: shelf::Shelves,
+    /// The file of a shelf that is being dragged, and the shelf it came from.
+    internal_drag: Option<(usize, String)>,
     /// The shelf whose name is being edited, with the name typed so far.
     renaming: Option<(usize, String)>,
     share_targets: Vec<ShareTarget>,
@@ -229,6 +240,11 @@ pub enum Message {
     CalendarShift(i32),
     DragEntered(window::Id),
     DragLeft(window::Id),
+    /// A file held over the island has not come back since it left.
+    DragLeftElapsed(u64),
+    /// A file of a shelf is being dragged: its shelf and URI.
+    InternalDragStart(usize, String),
+    InternalDragEnd,
     Dropped(window::Id, Option<Clip>),
     /// Ctrl+V or the paste button: add what is on the clipboard to the shelf.
     Paste,
@@ -288,11 +304,13 @@ impl cosmic::Application for Island {
 
     fn init(core: Core, flags: Flags) -> (Self, Task<Message>) {
         let id = core.main_window_id().unwrap_or_else(window::Id::unique);
+        let config: IslandConfig = config::load(APP_ID, config::CONFIG_VERSION);
+        geometry::set_reduced_motion(config.reduce_motion);
         let (_, thickness) = applet_thickness(&core);
         let compact = Size::new(thickness as f32 * 3.0, thickness as f32);
         let island = Self {
             core,
-            config: config::load(APP_ID, config::CONFIG_VERSION),
+            config,
             config_handle: cosmic_config::Config::new(APP_ID, config::CONFIG_VERSION).ok(),
             time_config: config::load(config::TIME_APPLET_ID, 1),
             locale: clock::system_locale(),
@@ -307,6 +325,7 @@ impl cosmic::Application for Island {
                 hover_generation: 0,
                 content_since: Instant::now(),
                 drag_over: false,
+                drag_generation: 0,
                 measured: compact,
                 dropped_at: None,
                 last_expanded: Size::new(view::EXPANDED_WIDTH + 24.0, 300.0),
@@ -321,6 +340,7 @@ impl cosmic::Application for Island {
             seeking: None,
             calendar_month: crate::modules::calendar::shift_month(Local::now().date_naive(), 0),
             shelves: shelf::Shelves::new(crate::fl!("shelf-default")),
+            internal_drag: None,
             renaming: None,
             share_targets: Vec::new(),
             state_handle: cosmic_config::Config::new_state(APP_ID, config::CONFIG_VERSION).ok(),
@@ -472,6 +492,7 @@ impl cosmic::Application for Island {
                 }
             }
             Message::Config(config) => {
+                geometry::set_reduced_motion(config.reduce_motion);
                 self.config = config;
                 if !self.shows(self.tab) {
                     self.tab = self.first_tab();
@@ -562,23 +583,53 @@ impl cosmic::Application for Island {
                 let task = self.set_expanded(id, true);
                 let state = &mut self.state;
                 state.drag_over = true;
+                state.drag_generation += 1;
                 state.hovered = true;
                 state.hover_generation += 1;
                 state.anim.go(state.target(), Instant::now());
                 return task;
             }
-            Message::DragLeft(id) => {
-                self.state.drag_over = false;
-                self.state.anim.go(self.state.target(), Instant::now());
-                return self.update(Message::PointerLeft(id));
+            Message::DragLeft(_) => {
+                // Moving onto a shelf's name leaves the island and enters it again at once.
+                self.state.drag_generation += 1;
+                return delayed(
+                    DRAG_LEAVE_GRACE,
+                    Message::DragLeftElapsed(self.state.drag_generation),
+                );
+            }
+            Message::DragLeftElapsed(generation) => {
+                if generation == self.state.drag_generation && self.state.drag_over {
+                    self.state.drag_over = false;
+                    self.state.anim.go(self.state.target(), Instant::now());
+                    return self.update(Message::PointerLeft(self.id));
+                }
+            }
+            Message::InternalDragStart(shelf, uri) => {
+                self.internal_drag = Some((shelf, uri));
+            }
+            Message::InternalDragEnd => {
+                self.internal_drag = None;
             }
             Message::Dropped(_, clip) => {
                 let now = Instant::now();
                 let state = &mut self.state;
                 // The island swallows the file: a short dip back to its size.
                 state.drag_over = false;
+                state.drag_generation += 1;
                 state.dropped_at = clip.is_some().then_some(now);
                 state.anim.bounce(state.target(), DROP_PUSH, now);
+                if let Some((from, uri)) = self.internal_drag.take() {
+                    // A file of one shelf dropped on another moves there.
+                    if from == self.shelves.current {
+                        return Task::none();
+                    }
+                    let task = self.add_clip(clip);
+                    if let Some(shelf) = self.shelves.list.get_mut(from) {
+                        shelf.items.retain(|i| i.uri != uri);
+                    }
+                    self.save_shelf();
+                    return task;
+                }
                 return self.add_clip(clip);
             }
             Message::Paste => {
@@ -620,7 +671,12 @@ impl cosmic::Application for Island {
                 self.save_shelf();
             }
             Message::DragOverShelf(index) => {
+                // Still over the island, only on a different part of it: nothing to leave.
                 self.shelves.select(index);
+                self.state.drag_over = true;
+                self.state.drag_generation += 1;
+                self.state.hovered = true;
+                self.state.hover_generation += 1;
             }
             Message::ShelfCreate => {
                 let number = self.shelves.list.len() + 1;
@@ -768,6 +824,12 @@ impl cosmic::Application for Island {
                 self.todos.set_done(id, done);
                 self.save_todos();
                 let google = self.push_change(id, |id| Change::Complete { id, done });
+                if done && geometry::reduced_motion() {
+                    // Nothing to strike through or slide away.
+                    self.todos.remove(id);
+                    self.save_todos();
+                    return google;
+                }
                 if done {
                     // Strike it through and let it leave, then remove it.
                     self.ticked.insert(id, Instant::now());
@@ -900,12 +962,14 @@ impl cosmic::Application for Island {
         ];
 
         let now = Instant::now();
+        let animating = !geometry::reduced_motion();
         let receiving = self.state.drag_over;
         let landing = self
             .landed
             .values()
             .any(|at| !geometry::content_transition_done(*at, now));
-        if receiving
+        if animating
+            && (receiving
             || landing
             || self.state.glow(now) > 0.0
             || self
@@ -914,7 +978,7 @@ impl cosmic::Application for Island {
                 .any(|at| now.duration_since(*at) < todo::TICK_ANIMATION)
             || self.state.anim.is_animating(now)
             || !geometry::content_transition_done(self.state.content_since, now)
-            || (self.popup.is_some() && !self.state.expanded)
+            || (self.popup.is_some() && !self.state.expanded))
         {
             subscriptions.push(window::frames().map(|(_, at)| Message::Frame(at)));
         }
@@ -950,7 +1014,7 @@ impl cosmic::Application for Island {
             subscriptions
                 .push(cosmic::iced::time::every(Duration::from_millis(250)).map(|_| Message::Tick));
         }
-        if playing && self.config.show_bars {
+        if playing && self.bars_enabled() {
             subscriptions
                 .push(Subscription::run(crate::modules::audio::levels).map(Message::AudioLevels));
         }
@@ -987,6 +1051,11 @@ impl cosmic::Application for Island {
 }
 
 impl Island {
+    /// Whether the bars next to the track are drawn: they are animation.
+    fn bars_enabled(&self) -> bool {
+        self.config.show_bars && !self.config.reduce_motion
+    }
+
     /// Whether the user keeps this tab in the island.
     fn shows(&self, tab: Tab) -> bool {
         tab.section().is_none_or(|s| self.config.shows(s))
@@ -1027,7 +1096,7 @@ impl Island {
             .is_some_and(|m| m.status == media::Status::Playing);
         let lyrics_page = self.lyrics_view && self.config.lyrics;
         let bars_shown = playing
-            && self.config.show_bars
+            && self.bars_enabled()
             && (!self.state.expanded
                 || self.tab == Tab::Home
                 || (self.tab == Tab::Media && !lyrics_page));
@@ -1053,7 +1122,7 @@ impl Island {
             // Shrink back into the applet; the popup goes when it has.
             state.measured = self.compact_size;
             state.anim.go(self.compact_size, now);
-            return Task::none();
+            return self.close_popup_when_done(now);
         }
         // Grow out of the applet.
         state.anim = SizeAnimation::settled(self.compact_size);
