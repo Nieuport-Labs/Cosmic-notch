@@ -515,6 +515,7 @@ impl cosmic::Application for Island {
                 match tab {
                     Tab::Shelf => return detect_share_targets(),
                     Tab::Calendar => return self.sync_calendar(),
+                    Tab::Media => return self.load_lyrics(),
                     Tab::Tasks => {
                         return Task::batch([
                             cosmic::widget::text_input::focus(todo::new_task_input_id()),
@@ -1206,6 +1207,13 @@ impl Island {
                 || self.tab == Tab::Home
                 || (self.tab == Tab::Media && !lyrics_page));
         crate::modules::audio::set_shown(bars_shown);
+        // The graphs are kept while the home page can show them; opening it later
+        // would otherwise start with empty ones.
+        crate::modules::system::set_history_wanted(
+            self.config.shows(config::Section::Home)
+                && (self.config.shows_card(config::HomeCard::Cpu)
+                    || self.config.shows_card(config::HomeCard::Network)),
+        );
         crate::modules::system::set_gpu_shown(
             self.tab == Tab::Home && self.state.expanded && self.config.shows_card(config::HomeCard::Gpu),
         );
@@ -1243,7 +1251,8 @@ impl Island {
         }
         state.measured = state.last_expanded;
         state.anim.go(state.target(), now);
-        self.open_popup()
+        let lyrics = self.load_lyrics();
+        Task::batch([self.open_popup(), lyrics])
     }
 
     /// The panel edge the island hangs from.
@@ -1396,7 +1405,8 @@ impl Island {
             self.lyrics = None;
             return Task::none();
         };
-        if !self.config.lyrics {
+        // Only looked up where they would show: on the media tab.
+        if !self.config.lyrics || !(self.state.expanded && self.tab == Tab::Media) {
             return Task::none();
         }
         if self.lyrics.as_ref().is_some_and(|(t, _)| *t == track) {

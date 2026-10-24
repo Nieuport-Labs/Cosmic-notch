@@ -366,6 +366,18 @@ pub fn uptime() -> Duration {
 static MONITOR: LazyLock<Mutex<Monitor>> = LazyLock::new(Default::default);
 /// The home tab is open: read everything, not just what the graphs need.
 static DETAILED: AtomicBool = AtomicBool::new(false);
+/// Something shows the CPU or network graphs: keep their history. Otherwise
+/// the sampling thread sleeps until it is wanted, without waking up.
+static HISTORY_WANTED: AtomicBool = AtomicBool::new(false);
+static WAKE: (Mutex<()>, std::sync::Condvar) = (Mutex::new(()), std::sync::Condvar::new());
+
+/// Whether the graphs of the home page are kept up to date.
+pub fn set_history_wanted(wanted: bool) {
+    if HISTORY_WANTED.swap(wanted, Ordering::Relaxed) != wanted && wanted {
+        WAKE.1.notify_all();
+    }
+}
+
 /// The home tab shows the graphics card: read it too.
 static GPU_SHOWN: AtomicBool = AtomicBool::new(false);
 
@@ -391,6 +403,19 @@ pub fn start() {
             .name("system-monitor".into())
             .spawn(|| {
                 loop {
+                    if !HISTORY_WANTED.load(Ordering::Relaxed) {
+                        // Nothing shows the graphs: sleep until something does, and
+                        // start the next history afresh.
+                        let guard = WAKE.0.lock().unwrap_or_else(|e| e.into_inner());
+                        let _unused = WAKE
+                            .1
+                            .wait_while(guard, |()| !HISTORY_WANTED.load(Ordering::Relaxed))
+                            .unwrap_or_else(|e| e.into_inner());
+                        let mut monitor = monitor();
+                        monitor.cpu_before = None;
+                        monitor.net_before = None;
+                        monitor.sampled_at = None;
+                    }
                     let now = Instant::now();
                     let detailed = DETAILED.load(Ordering::Relaxed);
                     let mut monitor = monitor();
