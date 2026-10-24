@@ -194,6 +194,7 @@ impl Island {
                 now_playing = now_playing.push(
                     container(
                         widget::text::body(media.label())
+                            .font(cosmic::font::semibold())
                             .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1))),
                     )
                     .max_width(self.config.title_max_width),
@@ -205,7 +206,7 @@ impl Island {
             row = row.push(now_playing);
         }
 
-        row.push(widget::text::body(self.clock_text())).into()
+        row.push(widget::text::body(self.clock_text()).font(cosmic::font::semibold())).into()
     }
 
     /// Album art, or a note icon on a plate when there is none.
@@ -313,6 +314,7 @@ impl Island {
             .push(title_row)
             .push(
                 widget::text::body(media.artists.clone())
+                    .font(cosmic::font::semibold())
                     .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1))),
             )
             .spacing(spacing.space_xxxs)
@@ -597,7 +599,7 @@ impl Island {
         let header = header
             .push(widget::Space::new().width(Length::Fill))
             .push(self.shelf_actions())
-            .push(widget::text::body(self.clock_text()))
+            .push(widget::text::body(self.clock_text()).font(cosmic::font::semibold()))
             .push(tab(icons::named("emblem-system-symbolic"), Tab::Settings, fl!("settings")))
             .spacing(spacing.space_xxxs)
             .align_y(Alignment::Center);
@@ -707,7 +709,7 @@ impl Island {
                     row = row.push(cell(widget::Space::new().into(), row_height));
                     continue;
                 };
-                let label = widget::text::body(date.day().to_string());
+                let label = widget::text::body(date.day().to_string()).font(cosmic::font::semibold());
                 let weekend =
                     matches!(date.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun);
                 let selected = google && date == self.calendar.selected;
@@ -948,6 +950,7 @@ impl Island {
                                         } else {
                                             event.title.clone()
                                         })
+                                        .font(cosmic::font::semibold())
                                         .ellipsize(Ellipsize::End(EllipsizeHeightLimit::Lines(1))),
                                     )
                                     .push(
@@ -1605,7 +1608,7 @@ pub(super) fn remove_button_class() -> cosmic::theme::Button {
 pub fn secondary_text(theme: &cosmic::Theme) -> cosmic::iced::widget::text::Style {
     let on = theme.cosmic().background(theme.transparent).on;
     cosmic::iced::widget::text::Style {
-        color: Some(faded(Color { a: 0.6, ..on.into() })),
+        color: Some(faded(Color { a: 0.7, ..on.into() })),
         ..Default::default()
     }
 }

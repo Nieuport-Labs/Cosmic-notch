@@ -42,7 +42,7 @@ impl Island {
             widget::Column::new()
                 .push(
                     widget::Row::new()
-                        .push(widget::text::title2(percent(monitor.cpu_now())))
+                        .push(widget::text::title2(percent(monitor.cpu_now())).font(cosmic::font::bold()))
                         .push(secondary(match monitor.frequency {
                             Some(ghz) => format!(
                                 "{} · {}",
@@ -316,7 +316,7 @@ fn small_card_filled(share: f32, body: Element<'_, Message>) -> Element<'_, Mess
 }
 
 fn secondary(text: String) -> widget::Text<'static, cosmic::Theme> {
-    widget::text::caption(text).class(cosmic::theme::Text::Custom(secondary_text))
+    widget::text::caption(text).font(cosmic::font::semibold()).class(cosmic::theme::Text::Custom(secondary_text))
 }
 
 fn percent(share: f32) -> String {
