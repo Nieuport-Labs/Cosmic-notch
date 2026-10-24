@@ -74,6 +74,8 @@ pub struct IslandConfig {
     pub google_tasks: bool,
     /// Show and add events of Google Calendar, through GNOME Online Accounts.
     pub google_calendar: bool,
+    /// Keep what is copied on a shelf of its own.
+    pub clipboard_history: bool,
     /// No springs, fades or slides: everything jumps to where it is going.
     pub reduce_motion: bool,
 }
@@ -104,6 +106,7 @@ impl Default for IslandConfig {
             hidden_cards: Vec::new(),
             google_tasks: false,
             google_calendar: false,
+            clipboard_history: false,
             reduce_motion: false,
         }
     }

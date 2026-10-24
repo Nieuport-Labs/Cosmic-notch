@@ -1197,6 +1197,7 @@ impl Island {
         for (index, shelf) in self.shelves.list.iter().enumerate() {
             if let Some((editing, name)) = &self.renaming
                 && *editing == index
+                && !self.shelves.is_history(index)
             {
                 row = row.push(
                     widget::text_input("", name.clone())
@@ -1210,7 +1211,7 @@ impl Island {
                     false,
                     Message::ShelfRenameCommit,
                 ));
-                if self.shelves.list.len() > 1 {
+                if self.shelves.list.len() > 1 && !self.shelves.is_history(index) {
                     row = row.push(island_button(
                         icons::trash(),
                         false,
@@ -1221,10 +1222,16 @@ impl Island {
             }
             let selected = index == self.shelves.current;
             let count = shelf.items.len();
-            let label = if count > 0 {
-                format!("{} · {count}", shelf.name)
+            // The history is named in the language of the moment, not of when it was made.
+            let name = if self.shelves.is_history(index) {
+                fl!("clipboard")
             } else {
                 shelf.name.clone()
+            };
+            let label = if count > 0 {
+                format!("{name} · {count}")
+            } else {
+                name
             };
             let chip = widget::mouse_area(
                 button::custom(widget::text::body(label))
@@ -1232,7 +1239,11 @@ impl Island {
                     .class(chip_class(selected))
                     .on_press(Message::ShelfSelect(index)),
             )
-            .on_double_click(Message::ShelfRenameStart(index));
+            .on_double_click(if self.shelves.is_history(index) {
+                Message::ShelfSelect(index)
+            } else {
+                Message::ShelfRenameStart(index)
+            });
             // Dragging a file over a shelf's name switches to it, so it lands there.
             let chip = widget::dnd_destination::dnd_destination_for_data::<Clip, _>(
                 chip,
@@ -1240,7 +1251,7 @@ impl Island {
             )
             .on_enter(move |_, _, _| Message::DragOverShelf(index));
             row = row.push(chip);
-            if selected && self.shelves.list.len() > 1 {
+            if selected && self.shelves.list.len() > 1 && !self.shelves.is_history(index) {
                 if self.confirm_delete == Some(index) {
                     row = row.push(
                         button::custom(widget::text::body(fl!("delete-shelf-confirm")))

@@ -5,6 +5,7 @@
 pub const APPLET_ID: &str = "io.github.jiricepelka.CosmicExtIsland.Applet";
 
 pub fn run() -> cosmic::iced::Result {
+    crate::ipc::take_privileged_socket();
     let mut flags = crate::app::Flags::default();
     // For development and screenshots: start open on a tab.
     if let Ok(tab) = std::env::var("COSMIC_EXT_ISLAND_EXPAND") {

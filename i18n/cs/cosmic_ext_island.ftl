@@ -109,3 +109,7 @@ card-gpu = Grafika
 card-network = Síť
 card-player = Přehrávač
 card-storage = Paměť a disky
+clipboard = Schránka
+clipboard-history = Ukládat, co zkopíruji
+clipboard-hint = Přidá přihrádku s posledními kopiemi: text, obrázky a soubory. Co kopírují správci hesel, se neukládá.
+clipboard-unavailable = Schránku tu nejde sledovat: kompozitor to tomuto appletu nedovolí.

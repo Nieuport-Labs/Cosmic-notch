@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod clipboard;
 pub mod calendar;
 pub mod clock;
 pub mod localsend;

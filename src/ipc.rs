@@ -72,3 +72,32 @@ pub fn serve() -> impl Stream<Item = Event> {
         std::future::pending().await
     })
 }
+
+/// The connection to the compositor that the panel hands its applets (with
+/// `X-HostWaylandDisplay`). Unlike the applet's own, it is not sandboxed, so
+/// the clipboard watcher may use protocols that need that.
+static PRIVILEGED_SOCKET: std::sync::Mutex<Option<std::os::fd::OwnedFd>> =
+    std::sync::Mutex::new(None);
+
+/// Takes the privileged socket from the environment; call once at startup.
+pub fn take_privileged_socket() {
+    use std::os::fd::FromRawFd;
+    let Some(fd) = std::env::var("X_PRIVILEGED_WAYLAND_SOCKET")
+        .ok()
+        .and_then(|fd| fd.parse::<std::os::fd::RawFd>().ok())
+    else {
+        return;
+    };
+    // SAFETY: the panel passes this descriptor to the applet alone, and
+    // nothing else in the applet takes it.
+    let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+    *PRIVILEGED_SOCKET.lock().unwrap_or_else(|e| e.into_inner()) = Some(fd);
+}
+
+/// Hands the privileged socket over, if the applet still has it.
+pub fn privileged_socket() -> Option<std::os::fd::OwnedFd> {
+    PRIVILEGED_SOCKET
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+}

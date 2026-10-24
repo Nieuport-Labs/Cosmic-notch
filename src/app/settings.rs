@@ -25,6 +25,7 @@ pub enum Message {
     ShowCard(HomeCard, bool),
     GoogleTasks(bool),
     GoogleCalendar(bool),
+    ClipboardHistory(bool),
     OpenOnlineAccounts,
 }
 
@@ -67,6 +68,16 @@ impl Island {
                 self.write(|c, h| c.set_google_tasks(h, v));
                 self.google.error = None;
                 return self.sync_tasks();
+            }
+            Message::ClipboardHistory(v) => {
+                self.write(|c, h| c.set_clipboard_history(h, v));
+                self.clipboard_error = None;
+                if v {
+                    self.shelves.enable_history(fl!("clipboard"));
+                } else {
+                    self.shelves.disable_history();
+                }
+                self.save_shelf();
             }
             Message::GoogleCalendar(v) => {
                 self.write(|c, h| c.set_google_calendar(h, v));
@@ -230,6 +241,19 @@ impl Island {
             ));
         }
 
+        let history = settings::section().title(fl!("clipboard")).add(
+            widget::Column::new()
+                .push(settings::item(
+                    fl!("clipboard-history"),
+                    widget::toggler(config.clipboard_history).on_toggle(Message::ClipboardHistory),
+                ))
+                .push(widget::text::caption(match &self.clipboard_error {
+                    Some(_) => fl!("clipboard-unavailable"),
+                    None => fl!("clipboard-hint"),
+                }))
+                .spacing(spacing.space_xxxs),
+        );
+
         let tasks = settings::section().title(fl!("google")).add(
             widget::Column::new()
                 .push(settings::item(
@@ -257,6 +281,7 @@ impl Island {
                 .push(behavior)
                 .push(compact)
                 .push(cards)
+                .push(history)
                 .push(tasks)
                 .push(lyrics)
                 .spacing(spacing.space_s)

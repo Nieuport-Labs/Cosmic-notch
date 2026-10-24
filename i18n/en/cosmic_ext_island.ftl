@@ -106,3 +106,7 @@ card-gpu = Graphics
 card-network = Network
 card-player = Player
 card-storage = Memory and disks
+clipboard = Clipboard
+clipboard-history = Keep what I copy
+clipboard-hint = Adds a shelf with the last things you copied: text, images and files. Not kept: what password managers copy.
+clipboard-unavailable = Can't watch the clipboard here: the compositor doesn't allow it to this applet.

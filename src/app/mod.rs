@@ -173,6 +173,8 @@ pub struct Island {
     /// First day of the month shown in the calendar tab.
     calendar_month: chrono::NaiveDate,
     shelves: shelf::Shelves,
+    /// Why the clipboard history cannot run, when it cannot.
+    clipboard_error: Option<String>,
     /// The file of a shelf that is being dragged, and the shelf it came from.
     internal_drag: Option<(usize, String)>,
     /// The shelf whose name is being edited, with the name typed so far.
@@ -293,6 +295,8 @@ pub enum Message {
     GoogleApplied(Box<sync::Applied>),
     OpenOnlineAccounts,
     /// Time to fetch the events from Google Calendar.
+    /// Something was copied, or the watcher could not start.
+    Clipboard(crate::modules::clipboard::Event),
     CalendarSync,
     CalendarPulled(
         chrono::NaiveDate,
@@ -363,6 +367,7 @@ impl cosmic::Application for Island {
             calendar_month: crate::modules::calendar::shift_month(Local::now().date_naive(), 0),
             shelves: shelf::Shelves::new(crate::fl!("shelf-default")),
             internal_drag: None,
+            clipboard_error: None,
             renaming: None,
             share_targets: Vec::new(),
             state_handle: cosmic_config::Config::new_state(APP_ID, config::CONFIG_VERSION).ok(),
@@ -388,6 +393,9 @@ impl cosmic::Application for Island {
             island.tab = island.first_tab();
         }
         island.load_shelf();
+        if island.config.clipboard_history {
+            island.shelves.enable_history(crate::fl!("clipboard"));
+        }
         island.load_todos();
         crate::modules::system::start();
         let thumbnails = island.load_thumbnails();
@@ -949,6 +957,7 @@ impl cosmic::Application for Island {
                 self.select_day(day);
                 return self.sync_calendar();
             }
+            Message::Clipboard(event) => return self.clipboard_event(event),
             Message::CalendarSync => return self.sync_calendar(),
             Message::CalendarPulled(from, to, result) => {
                 return self.calendar_pulled(from, to, result);
@@ -1066,6 +1075,10 @@ impl cosmic::Application for Island {
             let tasks_shown = expanded && self.tab == Tab::Tasks;
             let every = Duration::from_secs(if tasks_shown { 60 } else { 600 });
             subscriptions.push(cosmic::iced::time::every(every).map(|_| Message::GoogleSync));
+        }
+        if self.config.clipboard_history && self.clipboard_error.is_none() {
+            subscriptions
+                .push(Subscription::run(crate::modules::clipboard::watch).map(Message::Clipboard));
         }
         if self.config.google_calendar {
             // Often while the calendar is on screen, now and then otherwise; opening the tab syncs too.
@@ -1358,6 +1371,7 @@ impl Island {
 const LEGACY_SHELF_KEY: &str = "shelf";
 const SHELVES_KEY: &str = "shelves";
 const CURRENT_SHELF_KEY: &str = "current_shelf";
+const HISTORY_KEY: &str = "clipboard_shelf";
 const TASKS_KEY: &str = "tasks";
 
 pub fn shelf_name_input_id() -> cosmic::widget::Id {
@@ -1410,6 +1424,7 @@ impl Island {
         };
         let current = handle.get(CURRENT_SHELF_KEY).unwrap_or(0);
         self.shelves = shelf::Shelves::from_stored(stored, current, default_name);
+        self.shelves.history = handle.get(HISTORY_KEY).unwrap_or(false) && self.shelves.list.len() > 1;
     }
 
     /// Starts making thumbnails for shelf images that have none yet.
@@ -1458,6 +1473,48 @@ impl Island {
         self.load_thumbnails()
     }
 
+    /// Keeps a copy on the clipboard shelf.
+    fn clipboard_event(&mut self, event: crate::modules::clipboard::Event) -> Task<Message> {
+        use crate::modules::clipboard::Event;
+        let clip = match event {
+            Event::Unavailable(reason) => {
+                tracing::warn!("clipboard history unavailable: {reason}");
+                self.clipboard_error = Some(reason);
+                return Task::none();
+            }
+            Event::Copied(clip) => clip,
+        };
+        self.clipboard_error = None;
+        let text = match &clip {
+            Clip::Text(text) => Some(text.clone()),
+            _ => None,
+        };
+        // A copy already on the shelf only moves up; no new file.
+        if let Some(text) = &text
+            && self.shelves.bump_history_text(text)
+        {
+            self.save_shelf();
+            return Task::none();
+        }
+        let uris = match clip {
+            Clip::Files(uris) => uris,
+            clip => match shelf::save_snippet(&clip, Local::now()) {
+                Ok(uri) => UriList(vec![uri]),
+                Err(err) => {
+                    tracing::warn!("cannot keep the copied content: {err}");
+                    return Task::none();
+                }
+            },
+        };
+        let now = Instant::now();
+        self.landed.retain(|_, at| now.duration_since(*at) < Duration::from_secs(1));
+        for uri in self.shelves.add_to_history(uris) {
+            self.landed.insert(uri, now);
+        }
+        self.save_shelf();
+        self.load_thumbnails()
+    }
+
     fn load_todos(&mut self) {
         use cosmic_config::ConfigGet;
         if let Some(handle) = &self.state_handle {
@@ -1483,7 +1540,8 @@ impl Island {
         };
         let result = handle
             .set(SHELVES_KEY, self.shelves.to_stored())
-            .and_then(|()| handle.set(CURRENT_SHELF_KEY, self.shelves.current));
+            .and_then(|()| handle.set(CURRENT_SHELF_KEY, self.shelves.current))
+            .and_then(|()| handle.set(HISTORY_KEY, self.shelves.history));
         if let Err(err) = result {
             tracing::warn!("failed to save the shelves: {err}");
         }
