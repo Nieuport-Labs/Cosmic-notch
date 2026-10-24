@@ -1340,8 +1340,9 @@ impl Island {
         if !expanded {
             state.pinned = false;
             self.share_page = false;
-            // Reopen on the current month.
+            // Reopen on the current month and today.
             self.calendar_month = crate::modules::calendar::shift_month(self.now.date_naive(), 0);
+            self.select_day(self.now.date_naive());
         }
         if expanded { self.load_lyrics() } else { Task::none() }
     }

@@ -911,7 +911,7 @@ impl Island {
                         )
                         .spacing(spacing.space_xxs),
                 )
-                .height(Length::Fixed(LIST_HEIGHT))
+                // As tall as it needs, so the buttons are always there.
                 .into()
         } else if let Some(note) = self.calendar_note() {
             container(widget::text::caption(note).class(cosmic::theme::Text::Custom(secondary_text)))
