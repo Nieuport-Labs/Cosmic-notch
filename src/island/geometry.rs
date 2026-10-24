@@ -207,6 +207,18 @@ pub fn content_transition(since: Instant, now: Instant) -> (f32, f32) {
     (k, 0.8 + 0.2 * k)
 }
 
+/// Switching tabs: how far the new content still is from its place, as a
+/// share of the slide (1 at the start, 0 when it is there).
+pub fn tab_slide(since: Instant, now: Instant) -> f32 {
+    const DURATION: f32 = 0.3;
+    if reduced_motion() {
+        return 0.0;
+    }
+    let t = (now.saturating_duration_since(since).as_secs_f32() / DURATION).clamp(0.0, 1.0);
+    // Ease out: quick away, gentle arrival.
+    (1.0 - t).powi(3)
+}
+
 pub fn content_transition_done(since: Instant, now: Instant) -> bool {
     reduced_motion()
         || now.saturating_duration_since(since).as_secs_f32() >= 0.35

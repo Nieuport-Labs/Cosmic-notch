@@ -37,16 +37,23 @@ pub struct Fade<'a, Message> {
     content: Element<'a, Message>,
     opacity: f32,
     scale: f32,
-    /// How far up the content is drawn, in logical pixels. Layout and input
-    /// are unaffected, so it is for brief movements.
-    shift: f32,
+    /// How far the content is drawn from where it is laid out, in logical
+    /// pixels. Layout and input are unaffected, so it is for brief movements.
+    shift: Vector,
 }
 
 impl<Message> Fade<'_, Message> {
     /// Draws the content `dy` pixels higher than it is laid out.
     #[must_use]
     pub fn shifted(mut self, dy: f32) -> Self {
-        self.shift = dy;
+        self.shift.y = -dy;
+        self
+    }
+
+    /// Draws the content `dx` pixels to the right of where it is laid out.
+    #[must_use]
+    pub fn slid(mut self, dx: f32) -> Self {
+        self.shift.x = dx;
         self
     }
 }
@@ -61,7 +68,7 @@ pub fn fade<'a, Message>(
         content: content.into(),
         opacity: opacity.clamp(0.0, 1.0),
         scale,
-        shift: 0.0,
+        shift: Vector::ZERO,
     }
 }
 
@@ -132,11 +139,11 @@ impl<Message> Widget<Message, cosmic::Theme, cosmic::Renderer> for Fade<'_, Mess
                 viewport,
             );
         };
-        if (self.scale - 1.0).abs() < 0.001 && self.shift.abs() < 0.01 {
+        if (self.scale - 1.0).abs() < 0.001 && self.shift.x.abs() < 0.01 && self.shift.y.abs() < 0.01 {
             draw(renderer);
         } else {
             let anchor = Vector::new(bounds.x + bounds.width / 2.0, bounds.y);
-            let transformation = Transformation::translate(0.0, -self.shift)
+            let transformation = Transformation::translate(self.shift.x, self.shift.y)
                 * Transformation::translate(anchor.x, anchor.y)
                 * Transformation::scale(self.scale)
                 * Transformation::translate(-anchor.x, -anchor.y);

@@ -32,6 +32,8 @@ const LYRICS_ROWS: usize = 3;
 const LYRICS_HEIGHT: f32 = LYRICS_LINE * LYRICS_ROWS as f32;
 const LYRICS_SMALL: f32 = 14.0;
 const LYRICS_LARGE: f32 = 25.0;
+/// How far a new tab slides in from.
+const TAB_SLIDE: f32 = 56.0;
 /// Size of a file's preview on the shelf; its name is no wider.
 const PREVIEW: f32 = 88.0;
 
@@ -543,6 +545,15 @@ impl Island {
             Tab::Settings => self.settings_tab().map(Message::Settings),
         };
 
+        // A new tab slides in from its side and fades in on the way.
+        let body: Element<'_, Message> = match self.tab_changed {
+            Some((at, side)) => {
+                let left = geometry::tab_slide(at, std::time::Instant::now());
+                fade(body, 1.0 - left, 1.0).slid(side * left * TAB_SLIDE).into()
+            }
+            None => body,
+        };
+
         widget::Column::new()
             .push(header)
             .push(body)
@@ -674,10 +685,19 @@ impl Island {
                             plate_style(theme, [CELL; 4])
                         }))
                         .into()
-                } else if weekend {
-                    label.class(cosmic::theme::Text::Custom(secondary_text)).into()
                 } else {
-                    label.into()
+                    let label = if weekend {
+                        label.class(cosmic::theme::Text::Custom(secondary_text))
+                    } else {
+                        label
+                    };
+                    // As big as the circle of today, so the hover is that circle too.
+                    container(label)
+                        .width(Length::Fixed(size))
+                        .height(Length::Fixed(size))
+                        .align_x(Alignment::Center)
+                        .align_y(Alignment::Center)
+                        .into()
                 };
                 if !google {
                     row = row.push(cell(label, row_height));
@@ -700,19 +720,18 @@ impl Island {
                         }))
                         .into()
                 };
+                // The button is the day's circle, so its hover is round like the selection.
                 let day = widget::Column::new()
-                    .push(label)
+                    .push(
+                        button::custom(label)
+                            .padding(0)
+                            .class(round_button_class())
+                            .on_press(Message::CalendarSelect(date)),
+                    )
                     .push(dot)
-                    .spacing(1)
+                    .spacing(2)
                     .align_x(Alignment::Center);
-                row = row.push(cell(
-                    button::custom(day)
-                        .padding([2, 4])
-                        .class(button_class(false))
-                        .on_press(Message::CalendarSelect(date))
-                        .into(),
-                    row_height,
-                ));
+                row = row.push(cell(day.into(), row_height));
             }
             grid = grid.push(row);
         }
@@ -1454,6 +1473,27 @@ pub(super) fn button_class(selected: bool) -> cosmic::theme::Button {
         }),
         hovered: Box::new(move |_, theme| style(theme, base.max(0.1))),
         pressed: Box::new(move |_, theme| style(theme, 0.2)),
+    }
+}
+
+/// A flat round button: a faint circle on hover, as round as the selection in the calendar.
+fn round_button_class() -> cosmic::theme::Button {
+    fn style(theme: &cosmic::Theme, plate: f32) -> button::Style {
+        let cosmic = theme.cosmic();
+        let on = cosmic.background(theme.transparent).on;
+        button::Style {
+            background: (plate > 0.0).then(|| faded(Color { a: plate, ..on.into() }).into()),
+            border_radius: 999.0.into(),
+            icon_color: Some(faded(on)),
+            text_color: Some(faded(on)),
+            ..button::Style::new()
+        }
+    }
+    cosmic::theme::Button::Custom {
+        active: Box::new(|_, theme| style(theme, 0.0)),
+        disabled: Box::new(|theme| style(theme, 0.0)),
+        hovered: Box::new(|_, theme| style(theme, 0.1)),
+        pressed: Box::new(|_, theme| style(theme, 0.2)),
     }
 }
 

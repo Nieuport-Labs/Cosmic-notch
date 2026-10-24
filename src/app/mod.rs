@@ -168,6 +168,8 @@ pub struct Island {
     outputs: Vec<OutputEntry>,
     surfaces: HashMap<window::Id, SurfaceState>,
     tab: Tab,
+    /// When the tab last changed, and from which side the new one comes in (−1 left, 1 right).
+    tab_changed: Option<(Instant, f32)>,
     start_expanded: bool,
     media: Option<MediaState>,
     /// Cover art of the current track: its URL and the loaded image.
@@ -353,6 +355,7 @@ impl cosmic::Application for Island {
             outputs: Vec::new(),
             surfaces: HashMap::new(),
             tab: flags.expand.unwrap_or_default(),
+            tab_changed: None,
             start_expanded: flags.expand.is_some(),
             media: None,
             art: None,
@@ -489,6 +492,12 @@ impl cosmic::Application for Island {
             Message::SelectTab(tab) => {
                 if !self.shows(tab) {
                     return Task::none();
+                }
+                if tab != self.tab {
+                    // Tabs further right come in from the right.
+                    let order = |t: Tab| Tab::SECTIONS.iter().position(|s| *s == t).unwrap_or(Tab::SECTIONS.len());
+                    let side = if order(tab) > order(self.tab) { 1.0 } else { -1.0 };
+                    self.tab_changed = Some((Instant::now(), side));
                 }
                 self.tab = tab;
                 match tab {
@@ -1107,6 +1116,7 @@ impl cosmic::Application for Island {
             && (receiving
             || landing
             || self.surfaces.values().any(|s| s.glow(now) > 0.0)
+            || self.tab_changed.is_some_and(|(at, _)| geometry::tab_slide(at, now) > 0.001)
             || self
                 .ticked
                 .values()
