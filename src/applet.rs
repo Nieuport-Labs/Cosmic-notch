@@ -19,5 +19,6 @@ pub fn run() -> cosmic::iced::Result {
             _ => None,
         };
     }
+    flags.lyrics = std::env::var_os("COSMIC_EXT_ISLAND_LYRICS").is_some();
     crate::app::run(flags)
 }

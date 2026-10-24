@@ -42,6 +42,8 @@ use crate::modules::shelf::{self, Clip, ShareTarget, UriList};
 pub struct Flags {
     /// Start expanded and pinned on this tab.
     pub expand: Option<Tab>,
+    /// Show the lyrics page of the media tab.
+    pub lyrics: bool,
 }
 
 pub fn run(flags: Flags) -> cosmic::iced::Result {
@@ -353,7 +355,7 @@ impl cosmic::Application for Island {
             share_page: false,
             devices: Vec::new(),
             sends: HashMap::new(),
-            lyrics_view: false,
+            lyrics_view: flags.lyrics,
             lyrics: None,
             copied: None,
             todos: Default::default(),
