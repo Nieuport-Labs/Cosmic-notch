@@ -24,7 +24,7 @@ use cosmic::iced::platform_specific::runtime::wayland::layer_surface::{
     IcedMargin, IcedOutput, SctkLayerSurfaceSettings,
 };
 use cosmic::iced::platform_specific::shell::commands::{
-    blur::blur, layer_surface::set_keyboard_interactivity,
+    blur::blur,
 };
 use cosmic::iced::{Color, Size, Subscription, window};
 use cosmic::surface::action::{app_layer_shell, destroy_layer_shell};
@@ -1095,8 +1095,10 @@ impl cosmic::Application for Island {
         };
         let mut subscriptions = vec![
             Subscription::run_with(tick, clock::ticks).map(|()| Message::Tick),
-            cosmic::iced::event::listen_with(|event, status, window| match event {
-                cosmic::iced::Event::Window(window::Event::Unfocused) => Some(Message::Unfocused(window)),
+            cosmic::iced::event::listen_with(|event, status, _| match event {
+                cosmic::iced::Event::PlatformSpecific(PlatformSpecific::Wayland(
+                    wayland::Event::Layer(wayland::LayerEvent::Unfocused, _, id),
+                )) => Some(Message::Unfocused(id)),
                 cosmic::iced::Event::PlatformSpecific(PlatformSpecific::Wayland(
                     wayland::Event::Output(event, output),
                 )) => match event {
@@ -1341,17 +1343,7 @@ impl Island {
             // Reopen on the current month.
             self.calendar_month = crate::modules::calendar::shift_month(self.now.date_naive(), 0);
         }
-        let lyrics = if expanded { self.load_lyrics() } else { Task::none() };
-        // Keyboard focus only while open, so Esc works without stealing focus otherwise.
-        let focus = set_keyboard_interactivity(
-            id,
-            if expanded {
-                KeyboardInteractivity::OnDemand
-            } else {
-                KeyboardInteractivity::None
-            },
-        );
-        Task::batch([focus, lyrics])
+        if expanded { self.load_lyrics() } else { Task::none() }
     }
 
     fn wants_output(&self, entry: &OutputEntry) -> bool {
@@ -1451,7 +1443,10 @@ impl Island {
                 move |_| SctkLayerSurfaceSettings {
                     id,
                     layer,
-                    keyboard_interactivity: KeyboardInteractivity::None,
+                    // The island takes the keyboard when clicked (not when only
+                    // pointed at), so Esc and typing work, and losing it to a click
+                    // elsewhere closes an island opened with a click.
+                    keyboard_interactivity: KeyboardInteractivity::OnDemand,
                     input_zone: Some(Vec::new()),
                     anchor: Anchor::TOP,
                     output: output.clone(),
